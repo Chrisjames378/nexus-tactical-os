@@ -1,0 +1,116 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Orbitron", sans-serif;
+  --font-mono: "Share Tech Mono", monospace;
+  
+  --color-hud-green: #00ff41;
+  --color-hud-glow: rgba(0, 255, 65, 0.15);
+  --color-hud-dark: #020408;
+  --color-hud-card: #05070a;
+  
+  --animate-scanline: scanline 6s linear infinite;
+  --animate-flicker: flicker 0.15s infinite;
+  --animate-glow: pulse-glow 2s infinite ease-in-out;
+  --animate-terminal-blink: terminal-blink 1s step-end infinite;
+}
+
+/* CUSTOM CRT & CYBERPUNK HUD ANIMATIONS */
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes flicker {
+  0% { opacity: 0.985; }
+  50% { opacity: 0.995; }
+  100% { opacity: 0.985; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.2), inset 0 0 10px rgba(0, 255, 65, 0.1);
+    border-color: rgba(0, 255, 65, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(0, 255, 65, 0.5), inset 0 0 15px rgba(0, 255, 65, 0.25);
+    border-color: rgba(0, 255, 65, 0.8);
+  }
+}
+
+@keyframes terminal-blink {
+  from, to { border-color: transparent }
+  50% { border-color: #00ff41 }
+}
+
+/* CUSTOM UTILITIES & GLOBAL STYLES */
+body {
+  background-color: #020408;
+  color: #00ff41;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* Cyberpunk Scanline Overlay */
+.crt-overlay::before {
+  content: " ";
+  display: block;
+  position: fixed;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 0, 0.06));
+  z-index: 9999;
+  background-size: 100% 4px, 6px 100%;
+  pointer-events: none;
+}
+
+.crt-overlay::after {
+  content: " ";
+  display: block;
+  position: fixed;
+  top: 0; left: 0; bottom: 0; right: 0;
+  background: rgba(18, 16, 16, 0.1);
+  opacity: 0;
+  z-index: 9999;
+  pointer-events: none;
+  animation: flicker 0.15s infinite;
+}
+
+/* Grid Matrix Background */
+.hud-grid {
+  background-image: 
+    linear-gradient(rgba(0, 255, 65, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 65, 0.03) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Scrollbar customization */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(2, 4, 8, 0.5);
+  border: 1px solid rgba(0, 255, 65, 0.1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 65, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 65, 0.6);
+  box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+}
+
+/* Selection Glow */
+::selection {
+  background: rgba(0, 255, 65, 0.25);
+  text-shadow: 0 0 5px #00ff41;
+}
