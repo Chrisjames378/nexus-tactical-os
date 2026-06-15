@@ -1,0 +1,26 @@
+{
+  "short_name": "Nexus OS",
+  "name": "Nexus Tactical Operating System",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any"
+    },
+    {
+      "src": "icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#010306",
+  "theme_color": "#010306",
+  "display": "standalone",
+  "orientation": "portrait"
+}
