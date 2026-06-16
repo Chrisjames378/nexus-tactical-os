@@ -71,10 +71,12 @@ const App = () => {
   const [diagnosticResult, setDiagnosticResult] = useState(null);
   const [capturedImage, setCapturedImage] = useState(null);
 
-  // HUD metrics
+  // HUD metrics & History (Sparklines)
   const [packetsPerSec, setPacketsPerSec] = useState(0);
   const [healthStatus, setHealthStatus] = useState(100);
   const [activeNodesCount, setActiveNodesCount] = useState(1);
+  const [cpuHistory, setCpuHistory] = useState([45, 48, 52, 47, 50, 48, 55, 59, 44, 48]);
+  const [ramHistory, setRamHistory] = useState([61, 62, 62, 61, 60, 60, 61, 62, 61, 62]);
 
   // Target Device Details
   const [targetDevice, setTargetDevice] = useState({
@@ -83,6 +85,24 @@ const App = () => {
     status: "Standby Monitor",
     health: 100
   });
+
+  // Oscilloscope Customizer states
+  const [oscWaveform, setOscWaveform] = useState('sine'); // 'sine', 'square', 'triangle', 'sawtooth', 'noise'
+  const [oscFrequency, setOscFrequency] = useState(30);
+  const [oscAmplitude, setOscAmplitude] = useState(20);
+  const [oscFrozen, setOscFrozen] = useState(false);
+
+  // Audio Sequencer States
+  const [sequencerActive, setSequencerActive] = useState(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [sequencerSteps, setSequencerSteps] = useState([true, false, true, false, true, true, false, false]);
+  const [sequencerPitches, setSequencerPitches] = useState([440, 480, 520, 580, 640, 680, 720, 800]);
+  const [sequencerSpeed, setSequencerSpeed] = useState(250); // step rate in ms
+
+  // Hex Dump Analyzer States
+  const [fileName, setFileName] = useState('');
+  const [fileSize, setFileSize] = useState(0);
+  const [hexDumpData, setHexDumpData] = useState(null);
 
   // Agent descriptions
   const agentDescriptions = {
@@ -189,6 +209,36 @@ const App = () => {
       setOracleState("AWAITING_INPUT");
     }
   }, [view]);
+
+  // Telemetry sequencer loop effect
+  useEffect(() => {
+    if (!sequencerActive) return;
+    const interval = setInterval(() => {
+      setCurrentStep(prev => {
+        const next = (prev + 1) % 8;
+        if (sequencerSteps[next]) {
+          playBeep(sequencerPitches[next], 'sine', 0.05);
+        }
+        return next;
+      });
+    }, sequencerSpeed);
+    return () => clearInterval(interval);
+  }, [sequencerActive, sequencerSteps, sequencerPitches, sequencerSpeed]);
+
+  // Simulated HUD Performance Sparkline Update
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCpuHistory(prev => {
+        const nextVal = Math.max(30, Math.min(95, prev[prev.length - 1] + Math.floor(Math.random() * 15) - 7));
+        return [...prev.slice(1), nextVal];
+      });
+      setRamHistory(prev => {
+        const nextVal = Math.max(55, Math.min(85, prev[prev.length - 1] + Math.floor(Math.random() * 3) - 1));
+        return [...prev.slice(1), nextVal];
+      });
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
 
   // --- FIREBASE DYNAMIC BOOT ---
   useEffect(() => {
@@ -312,12 +362,14 @@ const App = () => {
   useEffect(() => {
     let animationId;
     const animate = () => {
-      setSineOffset(prev => (prev + 0.05) % (Math.PI * 2));
+      if (!oscFrozen) {
+        setSineOffset(prev => (prev + 0.05) % (Math.PI * 2));
+      }
       animationId = requestAnimationFrame(animate);
     };
     animationId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animationId);
-  }, []);
+  }, [oscFrozen]);
 
   // --- WEBUSB BRIDGE (REAL-TIME HARDWARE HANDSHAKE) ---
   const connectHardware = async () => {
@@ -373,7 +425,6 @@ const App = () => {
         throw new Error("WebSerial API is not supported or enabled in this browser.");
       }
       
-      // Request Serial Port
       const port = await navigator.serial.requestPort();
       logTerminal("WEBSERIAL: COM Port requested. Opening connection...");
       
@@ -390,7 +441,6 @@ const App = () => {
         health: 100
       });
 
-      // Spawn Reader Loop
       readSerialData(port);
 
     } catch (err) {
@@ -418,7 +468,6 @@ const App = () => {
             if (cleanLine) {
               logTerminal(`SERIAL RX: ${cleanLine}`);
               
-              // Push directly to visual telemetry feeds
               setLiveData(prev => [
                 {
                   id: `serial-pkt-${Date.now()}`,
@@ -441,45 +490,87 @@ const App = () => {
     }
   };
 
-  // --- DIAGNOSTICS DEPLOYMENT ACTIONS ---
-  const runSystemAction = (toolName, deviceType) => {
-    playBeep(600, 'square', 0.1);
-    setIsProcessingAction(true);
-    setActionProgress(0);
-    logTerminal(`Deploying sovereign engine: [${toolName}]`);
+  // --- FORENSIC FILE BINARY LOAD (HEX DUMP BUILDER) ---
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setFileName(file.name);
+    setFileSize(file.size);
+    playSuccessChime();
+    logTerminal(`ARCHIVIST: Loading binary forensics file: ${file.name} (${file.size} bytes)`);
 
-    let progress = 0;
-    const interval = setInterval(() => {
-      progress += 10;
-      setActionProgress(progress);
-      playBeep(700 + progress * 3, 'sine', 0.03);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const buffer = evt.target.result;
+      const dataView = new DataView(buffer);
+      const lines = [];
+      const chunkSize = 16;
       
-      if (progress === 30) logTerminal(`Isolating telemetry paths...`);
-      if (progress === 60) logTerminal(`Executing direct block-level flash write...`);
-      if (progress === 90) logTerminal(`Verifying sector checksum tables...`);
-
-      if (progress >= 100) {
-        clearInterval(interval);
-        setIsProcessingAction(false);
-        playSuccessChime();
-        logTerminal(`SUCCESS: ${toolName} optimization completed at 120% efficiency.`);
+      // Safety Cap: Read first 2KB maximum to prevent browser DOM locking on huge files
+      const bytesToRead = Math.min(buffer.byteLength, 2048);
+      
+      for (let offset = 0; offset < bytesToRead; offset += chunkSize) {
+        const offsetHex = offset.toString(16).padStart(6, '0').toUpperCase();
+        let hexBytes = '';
+        let asciiChars = '';
         
-        const logKey = deviceType === 'mobile' ? 'iFixer' : deviceType === 'pc' ? 'Systems_TuneUp' : 'Archivist';
-        setAgentLogs(prev => ({
-          ...prev,
-          [logKey]: [`Executed ${toolName} successfully.`, ...prev[logKey]]
-        }));
-
-        setTargetDevice(prev => ({
-          ...prev,
-          status: deviceType === 'mobile' ? "Clean / Sovereign Restored" : "System De-fragmented",
-          health: 100
-        }));
+        for (let i = 0; i < chunkSize; i++) {
+          if (offset + i < buffer.byteLength) {
+            const byte = dataView.getUint8(offset + i);
+            hexBytes += byte.toString(16).padStart(2, '0') + ' ';
+            asciiChars += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
+          } else {
+            hexBytes += '   ';
+          }
+        }
+        
+        lines.push({
+          offset: `0x${offsetHex}`,
+          hex: hexBytes.trim(),
+          ascii: asciiChars
+        });
       }
-    }, 150);
+      
+      setHexDumpData(lines);
+      logTerminal(`ARCHIVIST: Successfully generated hex dump for first ${bytesToRead} bytes.`);
+    };
+    reader.readAsArrayBuffer(file);
   };
 
-  // --- AGENT INTERFACE TRIGGER COMMANDS ---
+  // --- DIAGNOSTICS REPORT EXPORTER ---
+  const exportDiagnosticsReport = () => {
+    playSuccessChime();
+    const content = `# NEXUS OS FORENSIC DIAGNOSTIC REPORT
+Timestamp: ${new Date().toLocaleString()}
+Target Hardware: ${targetDevice.name}
+Operating System Architecture: ${targetDevice.os}
+Interface Connection Status: ${targetDevice.status}
+Device Stability Level: 120%
+System Integrity Health: ${targetDevice.health}%
+
+--------------------------------------------------------------------------------
+## AGENT ORACLE DIAGNOSTICS REPORT
+Visual Forensics Component Inspection Analysis (Gemini 2.5 Flash):
+
+${diagnosticResult || "No diagnostic scan performed yet."}
+
+--------------------------------------------------------------------------------
+© 2026 Nexus Global Development Team. Sovereign IP Protected.
+`;
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Nexus_Diagnostic_Report_${Date.now()}.md`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    logTerminal("ORACLE: Forensic diagnostic report compiled and exported.");
+  };
+
+  // --- DIAGNOSTICS DEPLOYMENT ACTIONS ---
   const triggerAgentAction = (agentName, actionText) => {
     playBeep(450, 'sawtooth', 0.12);
     logTerminal(`Directing ${agentName} to: "${actionText}"`);
@@ -506,7 +597,7 @@ const App = () => {
     }
   };
 
-  // --- DIAGNOSTIC CAMERA LENS HANDLERS (PRODUCTION GEMINI API EXECUTOR) ---
+  // --- DIAGNOSTIC LENS CAMERA FRAME HANDLERS ---
   const startCamera = async () => {
     playBeep(350, 'sine', 0.1);
     logTerminal("ORACLE: Accessing target camera stream...");
@@ -531,13 +622,11 @@ const App = () => {
     const data = canvasRef.current.toDataURL('image/png');
     setCapturedImage(data);
     
-    // Shut off camera stream to save resource usage
     if (videoRef.current.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(t => t.stop());
     }
 
     if (geminiApiKey) {
-      // Execute REAL Google Gemini Multimodal Diagnostic Call (No Mock)
       logTerminal("ORACLE: Transmitting forensic frame to Gemini API Visual Forensics...");
       setOracleState("DIAGNOSTIC_RUNNING");
       setDiagnosticResult("Analyzing component visuals. Quizzing Gemini 2.5 Flash database...");
@@ -582,7 +671,6 @@ const App = () => {
       }
 
     } else {
-      // Fallback Mock diagnostic if no API key is specified
       setOracleState("DIAGNOSIS_COMPLETE");
       setDiagnosticResult("SIMULATED DIAGNOSTIC (Enter Gemini Key in Settings for real inspection):\n- Phoenix-Mobile: Operating loop resolved by active firmware state restoration.\n- Resolution: Deploy standard image flash via secure OTG.\n- Aegis-Forensics: Memory cache clean sweep executed successfully.");
       logTerminal("ORACLE: Simulated frame analysis loaded. Input API Key in Settings for live diagnostics.");
@@ -729,6 +817,27 @@ const App = () => {
     }
   };
 
+  // --- SVG OSCILLOSCOPE WAVE MATH FORMULAS ---
+  const calculateOscY = (x) => {
+    const offset = oscFrozen ? 0 : sineOffset;
+    const angle = (x / oscFrequency) + offset * 2;
+    let val = 0;
+    
+    if (oscWaveform === 'sine') {
+      val = Math.sin(angle);
+    } else if (oscWaveform === 'square') {
+      val = Math.sin(angle) >= 0 ? 1 : -1;
+    } else if (oscWaveform === 'triangle') {
+      val = (2 / Math.PI) * Math.asin(Math.sin(angle));
+    } else if (oscWaveform === 'sawtooth') {
+      val = 2 * ( (angle / (Math.PI * 2)) - Math.floor(0.5 + (angle / (Math.PI * 2))) );
+    } else if (oscWaveform === 'noise') {
+      val = Math.sin(angle) + (Math.random() - 0.5) * 0.45;
+    }
+    
+    return 50 + val * oscAmplitude;
+  };
+
   return (
     <div className="crt-overlay min-h-screen bg-[#010306] text-[#00ff41] font-mono p-4 flex flex-col gap-4 selection:bg-[#00ff41]/30 overflow-x-hidden relative">
       
@@ -801,7 +910,7 @@ const App = () => {
                 type="password"
                 value={geminiApiKey}
                 onChange={(e) => saveGeminiKey(e.target.value)}
-                placeholder="Enter AI API Key (ghp / gemini-...)"
+                placeholder="Enter AI API Key (gemini-...)"
                 className="w-full bg-[#03060a] border border-[#00ff41]/30 p-2 text-[9px] text-[#00ff41] focus:outline-none focus:border-[#00ff41]/80 rounded font-mono"
               />
               <p className="text-[6.5px] opacity-45 uppercase">Saved locally. Needed for real-time visual fault diagnosis using Gemini models.</p>
@@ -950,23 +1059,43 @@ const App = () => {
       {(firebaseConfig || isLocalMode) && (
         <div className="relative z-10 flex-1 flex flex-col gap-4">
           
-          {/* HARDWARE OVERVIEW SECTION */}
-          <section className="bg-black/95 border border-[#00ff41]/30 p-4 rounded-xl text-[10px] grid grid-cols-2 sm:grid-cols-4 gap-4 relative overflow-hidden">
+          {/* HARDWARE OVERVIEW SECTION WITH PERFORMANCE SPARKLINES */}
+          <section className="bg-black/95 border border-[#00ff41]/35 p-4 rounded-xl text-[10px] grid grid-cols-2 md:grid-cols-4 gap-4 relative overflow-hidden">
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Hardware Target Name</p>
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Target Profile</p>
               <p className="font-bold text-white truncate">{targetDevice.name}</p>
+              <p className="text-[7.5px] opacity-65 font-mono truncate">{targetDevice.os}</p>
             </div>
+            
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Target OS Architecture</p>
-              <p className="font-bold text-white">{targetDevice.os}</p>
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">System Load CPU</p>
+              <div className="flex items-center gap-3 mt-1">
+                <span className="font-bold text-white min-w-[30px]">{cpuHistory[cpuHistory.length - 1]}%</span>
+                <svg className="w-20 h-6 stroke-[#00ff41] fill-none" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <polyline
+                    strokeWidth="2"
+                    points={cpuHistory.map((val, idx) => `${idx * 11},${30 - (val * 30 / 100)}`).join(' ')}
+                  />
+                </svg>
+              </div>
             </div>
+
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Interface Status</p>
-              <p className="font-bold text-white uppercase tracking-wider">{targetDevice.status}</p>
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">System Memory RAM</p>
+              <div className="flex items-center gap-3 mt-1">
+                <span className="font-bold text-white min-w-[30px]">{ramHistory[ramHistory.length - 1]}%</span>
+                <svg className="w-20 h-6 stroke-[#00ff41] fill-none" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <polyline
+                    strokeWidth="2"
+                    points={ramHistory.map((val, idx) => `${idx * 11},${30 - (val * 30 / 100)}`).join(' ')}
+                  />
+                </svg>
+              </div>
             </div>
+
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Hardware Health</p>
-              <div className="flex items-center gap-2 mt-0.5">
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Diagnostics Health</p>
+              <div className="flex items-center gap-2 mt-1">
                 <div className="flex-1 h-1.5 bg-gray-950 border border-[#00ff41]/20 rounded-full overflow-hidden">
                   <div className="h-full bg-[#00ff41]" style={{ width: `${targetDevice.health}%` }}></div>
                 </div>
@@ -1012,14 +1141,38 @@ const App = () => {
                 {/* Selected Agent Workspace Panel */}
                 <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex-1 flex flex-col md:flex-row gap-4">
                   
-                  {/* Left Side: Agent Controls */}
+                  {/* Left Side: Agent Controls & Hex Uploader for Archivist */}
                   <div className="flex-1 space-y-4 flex flex-col justify-between">
                     <div>
                       <div className="flex justify-between items-center border-b border-[#00ff41]/20 pb-2 mb-3">
                         <p className="text-[11px] font-black text-white uppercase font-sans">AGENT COUPLER: {selectedAgent.replace('_', ' ')}</p>
                         <span className="text-[8px] bg-[#00ff41]/10 border border-[#00ff41]/40 px-2 py-0.5 rounded text-[#00ff41] font-bold">ONLINE</span>
                       </div>
-                      <p className="text-[10px] leading-relaxed text-gray-300">{agentDescriptions[selectedAgent]}</p>
+                      <p className="text-[10px] leading-relaxed text-gray-300 mb-3">{agentDescriptions[selectedAgent]}</p>
+                      
+                      {/* Show HEX Dump Uploader when Archivist is selected */}
+                      {selectedAgent === 'Archivist' && (
+                        <div className="border border-[#00ff41]/30 bg-black/45 p-3 rounded-lg flex flex-col gap-2">
+                          <p className="text-[8.5px] uppercase font-bold text-white">Forensic Binary Hex Analyzer</p>
+                          <div className="flex items-center justify-between gap-3">
+                            <input 
+                              type="file" 
+                              id="file-hex-input"
+                              onChange={handleFileUpload}
+                              className="hidden" 
+                            />
+                            <label 
+                              htmlFor="file-hex-input"
+                              className="py-1.5 px-3 bg-black border border-[#00ff41] hover:bg-[#00ff41] hover:text-black font-black text-[8px] tracking-wider transition-all rounded cursor-pointer uppercase"
+                            >
+                              CHOOSE BIN FILE
+                            </label>
+                            <span className="text-[7.5px] opacity-75 truncate max-w-[150px] font-mono">
+                              {fileName ? `${fileName} (${fileSize} bytes)` : "NO FILE LOADED"}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-3 gap-2">
@@ -1044,17 +1197,38 @@ const App = () => {
                     </div>
                   </div>
 
-                  {/* Right Side: Specific Agent Log Console */}
-                  <div className="w-full md:w-96 flex flex-col bg-black/60 border border-[#00ff41]/10 rounded-lg p-3 h-48 md:h-auto font-mono">
-                    <p className="text-[8px] opacity-40 uppercase tracking-widest mb-2 border-b border-[#00ff41]/10 pb-1 font-mono">Agent Telemetry Logs</p>
-                    <div className="flex-1 overflow-y-auto space-y-1.5 scrollbar-thin">
-                      {(agentLogs[selectedAgent] || []).map((log, idx) => (
-                        <div key={idx} className="text-[9px] flex items-start gap-1">
-                          <span className="text-[#00ff41] opacity-60 select-none">&gt;&gt;</span>
-                          <span className="text-gray-300">{log}</span>
+                  {/* Right Side: Specific Agent Log Console / Hex Viewer */}
+                  <div className="w-full md:w-96 flex flex-col bg-black/60 border border-[#00ff41]/10 rounded-lg p-3 h-64 md:h-auto font-mono overflow-hidden">
+                    
+                    {/* Render Hex Dump if Archivist has loaded data */}
+                    {selectedAgent === 'Archivist' && hexDumpData ? (
+                      <div className="flex-1 flex flex-col overflow-hidden">
+                        <p className="text-[8px] opacity-40 uppercase tracking-widest mb-1.5 border-b border-[#00ff41]/15 pb-1">Hex address dump (Offset 2KB Max)</p>
+                        <div className="flex-1 overflow-y-auto space-y-0.5 text-[7.5px] leading-tight font-mono select-text scrollbar-thin">
+                          {hexDumpData.map((line, idx) => (
+                            <div key={idx} className="flex gap-2 hover:bg-[#00ff41]/10 transition-all px-1 py-0.2">
+                              <span className="text-[#00ff41] opacity-75">{line.offset}:</span>
+                              <span className="text-white tracking-wide">{line.hex}</span>
+                              <span className="text-cyan-400 opacity-80">{line.ascii}</span>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    ) : (
+                      // Default Logs Console
+                      <div className="flex-1 flex flex-col overflow-hidden">
+                        <p className="text-[8px] opacity-40 uppercase tracking-widest mb-2 border-b border-[#00ff41]/10 pb-1">Agent Telemetry Logs</p>
+                        <div className="flex-1 overflow-y-auto space-y-1.5 scrollbar-thin">
+                          {(agentLogs[selectedAgent] || []).map((log, idx) => (
+                            <div key={idx} className="text-[9px] flex items-start gap-1">
+                              <span className="text-[#00ff41] opacity-60 select-none">&gt;&gt;</span>
+                              <span className="text-gray-300">{log}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                   </div>
 
                 </div>
@@ -1196,12 +1370,20 @@ const App = () => {
                             {diagnosticResult}
                           </div>
                         </div>
-                        <button 
-                          onClick={resetCamera} 
-                          className="w-full py-2 bg-black border border-[#00ff41] text-[#00ff41] hover:bg-[#00ff41]/10 text-[9px] font-black tracking-widest transition-all rounded font-mono"
-                        >
-                          RESET DIAGNOSTIC LENS
-                        </button>
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={exportDiagnosticsReport}
+                            className="flex-1 py-2 bg-black border border-[#00ff41] text-[#00ff41] hover:bg-[#00ff41] hover:text-black text-[9px] font-black tracking-widest transition-all rounded font-mono"
+                          >
+                            📥 EXPORT FORENSIC REPORT
+                          </button>
+                          <button 
+                            onClick={resetCamera} 
+                            className="px-6 py-2 bg-black border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black text-[9px] font-black tracking-widest transition-all rounded font-mono"
+                          >
+                            RESET
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1217,43 +1399,81 @@ const App = () => {
                 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1">
                   
-                  {/* Telemetry SVG Oscilloscope */}
+                  {/* Telemetry SVG Oscilloscope with controls */}
                   <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col justify-between font-mono">
-                    <h3 className="text-[10px] font-black tracking-widest text-[#00ff41]/80 uppercase border-b border-[#00ff41]/10 pb-2 mb-3 font-sans">
-                      Signal Waveform Oscilloscope
-                    </h3>
-                    
-                    <div className="h-44 border border-[#00ff41]/20 bg-black relative flex items-center rounded-lg overflow-hidden">
-                      <div className="absolute inset-0 bg-gradient-to-b from-[#00ff41]/5 to-transparent pointer-events-none"></div>
-                      <div className="absolute left-4 top-2 text-[7px] text-[#00ff41]/40 font-bold uppercase tracking-wider">CH1 - 4.2V</div>
-                      <div className="absolute right-4 bottom-2 text-[7px] text-[#00ff41]/40 font-bold uppercase tracking-wider">SWEEP: AUTO</div>
+                    <div>
+                      <h3 className="text-[10px] font-black tracking-widest text-[#00ff41]/80 uppercase border-b border-[#00ff41]/10 pb-2 mb-3 font-sans">
+                        Signal Waveform Oscilloscope
+                      </h3>
                       
-                      <svg viewBox="0 0 300 100" className="w-full h-full" preserveAspectRatio="none">
-                        <line x1="0" y1="50" x2="300" y2="50" stroke="rgba(0,255,65,0.15)" strokeWidth="0.5" strokeDasharray="3,3" />
-                        <line x1="75" y1="0" x2="75" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
-                        <line x1="150" y1="0" x2="150" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
-                        <line x1="225" y1="0" x2="225" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
+                      <div className="h-44 border border-[#00ff41]/20 bg-black relative flex items-center rounded-lg overflow-hidden">
+                        <div className="absolute inset-0 bg-gradient-to-b from-[#00ff41]/5 to-transparent pointer-events-none"></div>
+                        <div className="absolute left-4 top-2 text-[7px] text-[#00ff41]/40 font-bold uppercase tracking-wider">CH1 - 4.2V</div>
+                        <div className="absolute right-4 bottom-2 text-[7px] text-[#00ff41]/40 font-bold uppercase tracking-wider">SWEEP: {oscFrozen ? "FROZEN" : "AUTO"}</div>
                         
-                        <path
-                          d={Array.from({ length: 300 })
-                            .map((_, x) => {
-                              const angle1 = (x / 30) + sineOffset * 2;
-                              const angle2 = (x / 10) + sineOffset * 4;
-                              const amplitude1 = 20;
-                              const amplitude2 = 5;
-                              const y = 50 + Math.sin(angle1) * amplitude1 + Math.cos(angle2) * amplitude2;
-                              return `${x === 0 ? 'M' : 'L'} ${x} ${y}`;
-                            })
-                            .join(' ')}
-                          fill="none"
-                          stroke="#00ff41"
-                          strokeWidth="1.5"
-                          className="drop-shadow-[0_0_3px_rgba(0,255,65,0.7)]"
-                        />
-                      </svg>
+                        <svg viewBox="0 0 300 100" className="w-full h-full" preserveAspectRatio="none">
+                          <line x1="0" y1="50" x2="300" y2="50" stroke="rgba(0,255,65,0.15)" strokeWidth="0.5" strokeDasharray="3,3" />
+                          <line x1="75" y1="0" x2="75" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
+                          <line x1="150" y1="0" x2="150" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
+                          <line x1="225" y1="0" x2="225" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
+                          
+                          <path
+                            d={Array.from({ length: 300 })
+                              .map((_, x) => {
+                                const y = calculateOscY(x);
+                                return `${x === 0 ? 'M' : 'L'} ${x} ${y}`;
+                              })
+                              .join(' ')}
+                            fill="none"
+                            stroke="#00ff41"
+                            strokeWidth="1.5"
+                            className="drop-shadow-[0_0_3px_rgba(0,255,65,0.7)]"
+                          />
+                        </svg>
+                      </div>
+
+                      {/* Oscilloscope parameters control panel */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-3 border border-[#00ff41]/15 p-2 bg-black/45 rounded-lg text-[8px] uppercase">
+                        <div className="flex flex-col gap-1">
+                          <label className="opacity-55">Waveform</label>
+                          <select 
+                            value={oscWaveform}
+                            onChange={(e) => setOscWaveform(e.target.value)}
+                            className="bg-black border border-[#00ff41]/30 p-1 text-[#00ff41] focus:outline-none rounded font-mono text-[7px]"
+                          >
+                            <option value="sine">SINE WAVE</option>
+                            <option value="square">SQUARE WAVE</option>
+                            <option value="triangle">TRIANGLE WAVE</option>
+                            <option value="sawtooth">SAWTOOTH WAVE</option>
+                            <option value="noise">NOISE STREAM</option>
+                          </select>
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex justify-between opacity-55"><span>Freq</span><span>{oscFrequency}</span></div>
+                          <input 
+                            type="range" min="5" max="80" step="5" value={oscFrequency}
+                            onChange={(e) => setOscFrequency(parseInt(e.target.value))}
+                            className="accent-[#00ff41] h-1"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex justify-between opacity-55"><span>Amp</span><span>{oscAmplitude}px</span></div>
+                          <input 
+                            type="range" min="5" max="45" step="2" value={oscAmplitude}
+                            onChange={(e) => setOscAmplitude(parseInt(e.target.value))}
+                            className="accent-[#00ff41] h-1"
+                          />
+                        </div>
+                        <button 
+                          onClick={() => { playBeep(750, 'sine', 0.05); setOscFrozen(!oscFrozen); }}
+                          className={`w-full py-1.5 font-bold tracking-widest border transition-all ${oscFrozen ? 'bg-[#00ff41] text-black border-[#00ff41]' : 'border-[#00ff41]/30 text-white'}`}
+                        >
+                          {oscFrozen ? "UNFREEZE" : "FREEZE"}
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 mt-4 text-[9px]">
+                    <div className="grid grid-cols-2 gap-2 mt-3 text-[9px]">
                       <div className="border border-[#00ff41]/10 p-2 bg-[#00ff41]/5 text-center">
                         <p className="opacity-50 uppercase text-[7px]">Packet Rate</p>
                         <p className="text-xs font-black text-white mt-0.5">{packetsPerSec} PPS</p>
@@ -1265,41 +1485,93 @@ const App = () => {
                     </div>
                   </div>
 
-                  {/* Telemetry Raw Packet List */}
-                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col font-mono">
-                    <h2 className="text-[10px] font-black tracking-widest mb-3 border-b border-[#00ff41]/20 pb-2 flex justify-between items-center font-sans">
-                      <span>CLOUD LINK LIVE TELEMETRY STREAM</span>
-                      <span className="flex items-center gap-1.5 text-[8px] bg-[#00ff41]/15 border border-[#00ff41]/40 px-2 py-0.5 animate-pulse text-[#00ff41]">
-                        <span>●</span> RX PIPELINE ACTIVE
-                      </span>
-                    </h2>
+                  {/* Telemetry Audio Sequencer & Packet Stream Panel */}
+                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col gap-4 font-mono">
+                    
+                    {/* Melodical Sequencer Grid */}
+                    <div className="border border-[#00ff41]/20 p-3 bg-black/60 rounded-lg space-y-2">
+                      <div className="flex justify-between items-center border-b border-[#00ff41]/15 pb-1 mb-2">
+                        <h4 className="text-[9px] font-black uppercase text-white font-sans">Telemetry Audio Sequencer</h4>
+                        <button 
+                          onClick={() => setSequencerActive(!sequencerActive)}
+                          className={`px-3 py-1 font-black text-[7.5px] border transition-all ${sequencerActive ? 'bg-red-500 text-black border-red-500 animate-pulse' : 'bg-[#00ff41]/5 text-[#00ff41] border-[#00ff41]/40'}`}
+                        >
+                          {sequencerActive ? "SEQUENCER_HALT" : "SEQUENCER_PLAY"}
+                        </button>
+                      </div>
 
-                    <div className="flex-1 overflow-y-auto space-y-1.5 max-h-56 scrollbar-thin">
-                      {liveData.length === 0 ? (
-                        <div className="h-full flex flex-col justify-center items-center py-16 opacity-30 italic text-[9px] uppercase font-bold tracking-widest">
-                          <span className="animate-bounce mb-2">📡</span>
-                          Awaiting telemetry broadcast...
-                        </div>
-                      ) : (
-                        liveData.map((item, idx) => (
-                          <div
-                            key={item.id || idx}
-                            className="text-[9px] bg-[#00ff41]/5 hover:bg-[#00ff41]/10 p-2 border-l-2 border-[#00ff41] flex flex-col sm:flex-row justify-between gap-1 transition-all group"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="text-[7px] px-1 py-0.2 bg-[#00ff41]/20 text-[#00ff41] font-black">RX</span>
-                              <span className="font-bold text-[#00ff41]">{item.node} &gt;&gt;</span>
-                              <span className="opacity-80 group-hover:text-white transition-all text-xs truncate max-w-[200px] sm:max-w-none">{item.device || 'SYSTEM HARDWARE'}</span>
-                            </div>
-                            <div className="flex items-center justify-between sm:justify-end gap-3 text-[8px]">
-                              <span className="opacity-40">{new Date(item.timestamp).toLocaleTimeString()}</span>
-                              <span className="text-[8px] border border-[#00ff41]/20 px-1 bg-[#00ff41]/5 text-white">
-                                {item.status || 'OK'}
-                              </span>
-                            </div>
+                      {/* 8 Step Matrix Grid */}
+                      <div className="grid grid-cols-8 gap-2">
+                        {Array.from({ length: 8 }).map((_, idx) => (
+                          <div key={idx} className="flex flex-col items-center gap-1.5">
+                            <button
+                              onClick={() => {
+                                playBeep(sequencerPitches[idx], 'sine', 0.05);
+                                setSequencerSteps(prev => {
+                                  const c = [...prev];
+                                  c[idx] = !c[idx];
+                                  return c;
+                                });
+                              }}
+                              className={`w-6 h-6 border font-bold text-[8px] flex items-center justify-center transition-all ${
+                                sequencerSteps[idx] ? 'bg-[#00ff41] text-black border-[#00ff41]' : 'border-gray-800 text-gray-500'
+                              } ${sequencerActive && currentStep === idx ? 'ring-2 ring-white scale-110' : ''}`}
+                            >
+                              {idx + 1}
+                            </button>
+                            <div className={`w-1.5 h-1.5 rounded-full ${sequencerActive && currentStep === idx ? 'bg-red-500 animate-ping' : 'bg-gray-800'}`}></div>
                           </div>
-                        ))
-                      )}
+                        ))}
+                      </div>
+
+                      {/* Sequencer Tempo Slider */}
+                      <div className="flex justify-between items-center text-[7.5px] uppercase pt-1 text-gray-400">
+                        <span className="opacity-70">Sequencer Speed</span>
+                        <div className="flex items-center gap-2">
+                          <input 
+                            type="range" min="100" max="600" step="50" value={sequencerSpeed}
+                            onChange={(e) => setSequencerSpeed(parseInt(e.target.value))}
+                            className="accent-[#00ff41] h-1 w-20"
+                          />
+                          <span>{sequencerSpeed}ms</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Telemetry Packets Stream */}
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                      <h2 className="text-[9px] font-black tracking-widest mb-2 border-b border-[#00ff41]/20 pb-1.5 flex justify-between items-center font-sans">
+                        <span>LIVE TELEMETRY STREAM</span>
+                        <span className="text-[7.5px] opacity-45">MAX 25 PACKETS</span>
+                      </h2>
+
+                      <div className="flex-1 overflow-y-auto space-y-1.5 max-h-40 scrollbar-thin">
+                        {liveData.length === 0 ? (
+                          <div className="h-full flex flex-col justify-center items-center py-10 opacity-30 italic text-[9px] uppercase font-bold tracking-widest">
+                            <span className="animate-bounce mb-2">📡</span>
+                            Awaiting telemetry broadcast...
+                          </div>
+                        ) : (
+                          liveData.map((item, idx) => (
+                            <div
+                              key={item.id || idx}
+                              className="text-[9px] bg-[#00ff41]/5 hover:bg-[#00ff41]/10 p-2 border-l-2 border-[#00ff41] flex flex-col sm:flex-row justify-between gap-1 transition-all group"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-[7px] px-1 py-0.2 bg-[#00ff41]/20 text-[#00ff41] font-black">RX</span>
+                                <span className="font-bold text-[#00ff41]">{item.node} &gt;&gt;</span>
+                                <span className="opacity-80 group-hover:text-white transition-all text-[8.5px] truncate max-w-[200px] sm:max-w-none">{item.device || 'SYSTEM HARDWARE'}</span>
+                              </div>
+                              <div className="flex items-center justify-between sm:justify-end gap-3 text-[8px]">
+                                <span className="opacity-40">{new Date(item.timestamp).toLocaleTimeString()}</span>
+                                <span className="text-[8px] border border-[#00ff41]/20 px-1 bg-[#00ff41]/5 text-white">
+                                  {item.status || 'OK'}
+                                </span>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
                   </div>
 
