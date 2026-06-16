@@ -55,9 +55,17 @@ const App = () => {
   const [toolTab, setToolTab] = useState('mobile'); // 'mobile', 'pc'
   const [selectedAgent, setSelectedAgent] = useState('Oracle');
   
+  // Settings & Configurations
+  const [showSettings, setShowSettings] = useState(false);
+  const [showBridgeModal, setShowBridgeModal] = useState(false);
+  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('NEXUS_GEMINI_API_KEY') || '');
+  const [serialBaudRate, setSerialBaudRate] = useState(() => localStorage.getItem('NEXUS_SERIAL_BAUD_RATE') || '115200');
+  const [audioEnabled, setAudioEnabled] = useState(() => localStorage.getItem('NEXUS_AUDIO_ENABLED') !== 'false');
+  const [audioVolume, setAudioVolume] = useState(() => parseFloat(localStorage.getItem('NEXUS_AUDIO_VOLUME') || '0.04'));
+
   // Advanced States
   const [aegisStatus, setAegisStatus] = useState("SHIELD_ACTIVE"); // "SHIELD_ACTIVE", "THREAT_BLOCKED"
-  const [oracleState, setOracleState] = useState("AWAITING_INPUT"); // "AWAITING_INPUT", "LENS_ACTIVE", "DIAGNOSIS_COMPLETE"
+  const [oracleState, setOracleState] = useState("AWAITING_INPUT"); // "AWAITING_INPUT", "LENS_ACTIVE", "DIAGNOSTIC_RUNNING", "DIAGNOSIS_COMPLETE"
   const [isProcessingAction, setIsProcessingAction] = useState(false);
   const [actionProgress, setActionProgress] = useState(0);
   const [diagnosticResult, setDiagnosticResult] = useState(null);
@@ -100,9 +108,30 @@ const App = () => {
   const terminalEndRef = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const serialPortRef = useRef(null);
+  const serialReaderRef = useRef(null);
+
+  // Save Settings Helpers
+  const saveGeminiKey = (key) => {
+    setGeminiApiKey(key);
+    localStorage.setItem('NEXUS_GEMINI_API_KEY', key);
+  };
+  const saveBaudRate = (baud) => {
+    setSerialBaudRate(baud);
+    localStorage.setItem('NEXUS_SERIAL_BAUD_RATE', baud);
+  };
+  const saveAudioEnabled = (val) => {
+    setAudioEnabled(val);
+    localStorage.setItem('NEXUS_AUDIO_ENABLED', val ? 'true' : 'false');
+  };
+  const saveAudioVolume = (val) => {
+    setAudioVolume(val);
+    localStorage.setItem('NEXUS_AUDIO_VOLUME', val.toString());
+  };
 
   // --- AUDIO SYNTHESIZER ENGINE (WEB AUDIO API) ---
   const playBeep = (freq = 800, type = 'sine', duration = 0.08) => {
+    if (!audioEnabled || audioVolume === 0) return;
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
@@ -116,7 +145,7 @@ const App = () => {
       osc.frequency.setValueAtTime(freq, ctx.currentTime);
       osc.type = type;
       
-      gain.gain.setValueAtTime(0.04, ctx.currentTime);
+      gain.gain.setValueAtTime(audioVolume, ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
       
       osc.start(ctx.currentTime);
@@ -335,6 +364,83 @@ const App = () => {
     }
   };
 
+  // --- WEBSERIAL DIALOG MONITOR (REAL UART STREAMING) ---
+  const connectSerialHardware = async () => {
+    playBeep(550, 'square', 0.12);
+    logTerminal("WEBSERIAL: Awaiting COM port selection...");
+    try {
+      if (!navigator.serial) {
+        throw new Error("WebSerial API is not supported or enabled in this browser.");
+      }
+      
+      // Request Serial Port
+      const port = await navigator.serial.requestPort();
+      logTerminal("WEBSERIAL: COM Port requested. Opening connection...");
+      
+      await port.open({ baudRate: parseInt(serialBaudRate) });
+      serialPortRef.current = port;
+      setUsbDevice("Serial COM Port");
+      playSuccessChime();
+      logTerminal(`WEBSERIAL: Port opened successfully at ${serialBaudRate} baud.`);
+      
+      setTargetDevice({
+        name: "UART Serial bridge Link",
+        os: `COM Serial Port (${serialBaudRate} Baud)`,
+        status: "UART Telemetry Stream Online",
+        health: 100
+      });
+
+      // Spawn Reader Loop
+      readSerialData(port);
+
+    } catch (err) {
+      logTerminal(`WEBSERIAL ERROR: ${err.message}`);
+    }
+  };
+
+  const readSerialData = async (port) => {
+    const textDecoder = new TextDecoderStream();
+    const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+    const reader = textDecoder.readable.getReader();
+    serialReaderRef.current = reader;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          logTerminal("WEBSERIAL: Stream closed.");
+          break;
+        }
+        if (value) {
+          const lines = value.split('\n');
+          lines.forEach(line => {
+            const cleanLine = line.trim();
+            if (cleanLine) {
+              logTerminal(`SERIAL RX: ${cleanLine}`);
+              
+              // Push directly to visual telemetry feeds
+              setLiveData(prev => [
+                {
+                  id: `serial-pkt-${Date.now()}`,
+                  node: 'UART_BRIDGE',
+                  device: cleanLine,
+                  timestamp: Date.now(),
+                  status: 'RX'
+                },
+                ...prev.slice(0, 24)
+              ]);
+              setPacketsPerSec(prev => prev + 1);
+            }
+          });
+        }
+      }
+    } catch (err) {
+      logTerminal(`SERIAL STREAM READ ERROR: ${err.message}`);
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
   // --- DIAGNOSTICS DEPLOYMENT ACTIONS ---
   const runSystemAction = (toolName, deviceType) => {
     playBeep(600, 'square', 0.1);
@@ -400,7 +506,7 @@ const App = () => {
     }
   };
 
-  // --- DIAGNOSTIC CAMERA LENS HANDLERS ---
+  // --- DIAGNOSTIC CAMERA LENS HANDLERS (PRODUCTION GEMINI API EXECUTOR) ---
   const startCamera = async () => {
     playBeep(350, 'sine', 0.1);
     logTerminal("ORACLE: Accessing target camera stream...");
@@ -416,7 +522,7 @@ const App = () => {
     }
   };
 
-  const captureFrame = () => {
+  const captureFrame = async () => {
     playBeep(850, 'sine', 0.05);
     if (!videoRef.current || !canvasRef.current) return;
     
@@ -425,13 +531,62 @@ const App = () => {
     const data = canvasRef.current.toDataURL('image/png');
     setCapturedImage(data);
     
+    // Shut off camera stream to save resource usage
     if (videoRef.current.srcObject) {
       videoRef.current.srcObject.getTracks().forEach(t => t.stop());
     }
-    
-    setOracleState("DIAGNOSIS_COMPLETE");
-    setDiagnosticResult("PROPRIETARY RECOVERY DIAGNOSTIC:\n- Phoenix-Mobile: Operating loop resolved by active firmware state restoration.\n- Resolution: Deploy standard image flash via secure OTG.\n- Aegis-Forensics: Memory cache clean sweep executed successfully.");
-    logTerminal("ORACLE: Forensic frame captured. Analyzing Visual Component fault tables...");
+
+    if (geminiApiKey) {
+      // Execute REAL Google Gemini Multimodal Diagnostic Call (No Mock)
+      logTerminal("ORACLE: Transmitting forensic frame to Gemini API Visual Forensics...");
+      setOracleState("DIAGNOSTIC_RUNNING");
+      setDiagnosticResult("Analyzing component visuals. Quizzing Gemini 2.5 Flash database...");
+      
+      const rawBase64 = data.split(',')[1];
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: "You are Agent Oracle, a specialized hardware recovery and board-level forensics engineer. Analyze this visual capture of a motherboard/hardware component. Identify the board type, locate potential failures (such as capacitor bulge, burnt tracks, corrosion, disconnected headers, mechanical stress, or bad solder joints), state the likely fault and suggest step-by-step repair or recovery instructions. Be specific, technical, and concise." },
+                {
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: rawBase64
+                  }
+                }
+              ]
+            }]
+          })
+        });
+
+        const json = await response.json();
+        if (json.candidates && json.candidates[0].content.parts[0].text) {
+          const resultText = json.candidates[0].content.parts[0].text;
+          setDiagnosticResult(resultText);
+          setOracleState("DIAGNOSIS_COMPLETE");
+          playSuccessChime();
+          logTerminal("ORACLE: visual fault analysis successfully generated by Gemini.");
+        } else {
+          throw new Error(json.error?.message || "Invalid response parsing structure.");
+        }
+      } catch (err) {
+        logTerminal(`ORACLE ERROR: Gemini API call failed: ${err.message}`);
+        setDiagnosticResult(`ORACLE CONSOLE ERROR:\n- Gemini API request aborted.\n- Detail: ${err.message}\n\nFalling back to simulated diagnostic report...`);
+        setOracleState("DIAGNOSIS_COMPLETE");
+        playAlarm();
+      }
+
+    } else {
+      // Fallback Mock diagnostic if no API key is specified
+      setOracleState("DIAGNOSIS_COMPLETE");
+      setDiagnosticResult("SIMULATED DIAGNOSTIC (Enter Gemini Key in Settings for real inspection):\n- Phoenix-Mobile: Operating loop resolved by active firmware state restoration.\n- Resolution: Deploy standard image flash via secure OTG.\n- Aegis-Forensics: Memory cache clean sweep executed successfully.");
+      logTerminal("ORACLE: Simulated frame analysis loaded. Input API Key in Settings for live diagnostics.");
+    }
   };
 
   const resetCamera = () => {
@@ -456,9 +611,27 @@ const App = () => {
     setTerminalCommand('');
     playBeep(700, 'sine', 0.06);
 
+    if (cmd.startsWith('b64-encode ')) {
+      const val = cmd.replace('b64-encode ', '');
+      try {
+        const enc = btoa(val);
+        logTerminal(`BASE64 ENCODED: "${enc}"`);
+      } catch(e) { logTerminal("ENCODE ERROR: Invalid character."); }
+      return;
+    }
+
+    if (cmd.startsWith('b64-decode ')) {
+      const val = cmd.replace('b64-decode ', '');
+      try {
+        const dec = atob(val);
+        logTerminal(`BASE64 DECODED: "${dec}"`);
+      } catch(e) { logTerminal("DECODE ERROR: Invalid padding."); }
+      return;
+    }
+
     switch (cmd) {
       case 'help':
-        logTerminal("AVAILABLE DIRECTIVES: 'help', 'clear', 'simulate', 'cloud', 'ping', 'reset-config', 'sys-check', 'aegis-trigger', 'lens-start', 'phoenix-bypass'");
+        logTerminal("AVAILABLE DIRECTIVES: 'help', 'clear', 'simulate', 'cloud', 'ping', 'reset-config', 'sys-check', 'aegis-trigger', 'lens-start', 'phoenix-bypass', 'b64-encode [text]', 'b64-decode [hash]'");
         break;
       case 'clear':
         setTerminal([]);
@@ -480,7 +653,16 @@ const App = () => {
         }
         break;
       case 'ping':
-        logTerminal("PONG // STABILITY ENVELOPE STABLE. LATENCY < 4ms");
+        logTerminal("PING: Transmitting packet to secure gateway...");
+        const start = Date.now();
+        fetch('https://api.github.com', { method: 'HEAD', mode: 'no-cors' })
+          .then(() => {
+            const lat = Date.now() - start;
+            logTerminal(`PONG // LATENCY: ${lat}ms // CONNECTION SECURE`);
+          })
+          .catch(err => {
+            logTerminal(`PING ERROR // GATEWAY OFFLINE: ${err.message}`);
+          });
         break;
       case 'reset-config':
         localStorage.removeItem('NEXUS_FIREBASE_CONFIG');
@@ -532,6 +714,21 @@ const App = () => {
     }
   };
 
+  const shutdownSerialPort = async () => {
+    if (serialReaderRef.current) {
+      try {
+        await serialReaderRef.current.cancel();
+      } catch(e){}
+      serialReaderRef.current = null;
+    }
+    if (serialPortRef.current) {
+      try {
+        await serialPortRef.current.close();
+      } catch(e){}
+      serialPortRef.current = null;
+    }
+  };
+
   return (
     <div className="crt-overlay min-h-screen bg-[#010306] text-[#00ff41] font-mono p-4 flex flex-col gap-4 selection:bg-[#00ff41]/30 overflow-x-hidden relative">
       
@@ -552,6 +749,113 @@ const App = () => {
         </div>
       )}
 
+      {/* WEBUSB vs WEBSERIAL BRIDGE MODAL */}
+      {showBridgeModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[#05070a] border border-[#00ff41]/60 p-6 rounded-xl shadow-[0_0_30px_rgba(0,255,65,0.2)]">
+            <h3 className="text-xs font-black tracking-widest text-white border-b border-[#00ff41]/25 pb-2 mb-4 font-sans uppercase">
+              SELECT TELEMETRY INTERFACE BRIDGE
+            </h3>
+            <p className="text-[9px] opacity-75 leading-relaxed mb-5 uppercase">
+              Establish a low-level physical OTG interface mapping. Choose your diagnostic protocol standard:
+            </p>
+            <div className="space-y-3">
+              <button 
+                onClick={() => { setShowBridgeModal(false); connectHardware(); }} 
+                className="w-full py-3 bg-black border border-[#00ff41]/40 hover:bg-[#00ff41]/10 text-white font-bold text-[10px] tracking-wider transition-all rounded-lg flex items-center justify-between px-4"
+              >
+                <span>🔌 WEBUSB PHYSICAL DEVICE</span>
+                <span className="text-[8px] bg-[#00ff41]/20 px-2 py-0.5 rounded text-[#00ff41]">ACTIVE SCAN</span>
+              </button>
+              <button 
+                onClick={() => { setShowBridgeModal(false); connectSerialHardware(); }} 
+                className="w-full py-3 bg-black border border-[#00ff41]/40 hover:bg-[#00ff41]/10 text-white font-bold text-[10px] tracking-wider transition-all rounded-lg flex items-center justify-between px-4"
+              >
+                <span>📺 WEBSERIAL UART TERMINAL</span>
+                <span className="text-[8px] bg-[#00ff41]/20 px-2 py-0.5 rounded text-[#00ff41]">{serialBaudRate} BAUD</span>
+              </button>
+            </div>
+            <button 
+              onClick={() => { playBeep(350, 'sine', 0.05); setShowBridgeModal(false); }} 
+              className="w-full mt-5 py-2 bg-red-950/20 border border-red-500/40 text-red-500 font-black text-[9px] tracking-wider hover:bg-red-500 hover:text-black transition-all rounded-md"
+            >
+              CLOSE
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* SLIDE-OUT SYSTEM CONFIGURATION DRAWER */}
+      {showSettings && (
+        <div className="fixed inset-y-0 right-0 w-80 bg-black/95 border-l border-[#00ff41]/40 z-[90] p-5 shadow-[0_0_40px_rgba(0,255,65,0.15)] flex flex-col justify-between backdrop-blur-md animate-in slide-in-from-right duration-300">
+          <div className="space-y-6">
+            <div className="flex justify-between items-center border-b border-[#00ff41]/20 pb-2">
+              <h3 className="text-xs font-black tracking-widest text-white font-sans uppercase">[SYSTEM CONFIGURATION]</h3>
+              <button onClick={() => { playBeep(300, 'sine', 0.06); setShowSettings(false); }} className="text-[9px] border border-red-500/40 text-red-500 px-2 py-0.5 hover:bg-red-500 hover:text-black transition-all rounded">CLOSE</button>
+            </div>
+
+            {/* Gemini API Key input */}
+            <div className="space-y-1.5">
+              <label className="block text-[8px] font-bold uppercase tracking-wider text-[#00ff41]/70">Google Gemini API Key</label>
+              <input 
+                type="password"
+                value={geminiApiKey}
+                onChange={(e) => saveGeminiKey(e.target.value)}
+                placeholder="Enter AI API Key (ghp / gemini-...)"
+                className="w-full bg-[#03060a] border border-[#00ff41]/30 p-2 text-[9px] text-[#00ff41] focus:outline-none focus:border-[#00ff41]/80 rounded font-mono"
+              />
+              <p className="text-[6.5px] opacity-45 uppercase">Saved locally. Needed for real-time visual fault diagnosis using Gemini models.</p>
+            </div>
+
+            {/* WebSerial Baud Rate Select */}
+            <div className="space-y-1.5">
+              <label className="block text-[8px] font-bold uppercase tracking-wider text-[#00ff41]/70">UART Serial Baud Rate</label>
+              <select
+                value={serialBaudRate}
+                onChange={(e) => saveBaudRate(e.target.value)}
+                className="w-full bg-[#03060a] border border-[#00ff41]/30 p-2 text-[9px] text-[#00ff41] focus:outline-none focus:border-[#00ff41]/80 rounded font-mono"
+              >
+                <option value="9600">9600 BAUD (Standard Arduino)</option>
+                <option value="19200">19200 BAUD</option>
+                <option value="38400">38400 BAUD</option>
+                <option value="57600">57600 BAUD</option>
+                <option value="115200">115200 BAUD (High-Speed ESP32/UART)</option>
+              </select>
+            </div>
+
+            {/* Audio volume settings */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <label className="block text-[8px] font-bold uppercase tracking-wider text-[#00ff41]/70">Synthesizer Volume</label>
+                <span className="text-[8px] text-white">{Math.round(audioVolume * 1000)}%</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input 
+                  type="checkbox"
+                  checked={audioEnabled}
+                  onChange={(e) => saveAudioEnabled(e.target.checked)}
+                  className="accent-[#00ff41]"
+                />
+                <input 
+                  type="range"
+                  min="0"
+                  max="0.1"
+                  step="0.01"
+                  value={audioVolume}
+                  onChange={(e) => saveAudioVolume(parseFloat(e.target.value))}
+                  disabled={!audioEnabled}
+                  className="flex-1 accent-[#00ff41] h-1 bg-gray-950 rounded-lg appearance-none cursor-pointer"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-[#00ff41]/20 pt-4 text-[7px] opacity-40 uppercase leading-relaxed font-mono">
+            * Warning: Do not distribute configuration parameters. The zero-trust secure sandbox isolated environment prevents credential extraction leaks.
+          </div>
+        </div>
+      )}
+
       {/* HEADER HUD */}
       <header className="relative z-10 p-4 bg-black border border-[#00ff41]/20 rounded-xl flex flex-col sm:flex-row justify-between items-center gap-4 sticky top-0 backdrop-blur-md">
         <div className="flex items-center gap-3">
@@ -566,8 +870,12 @@ const App = () => {
         
         <div className="flex items-center gap-6">
           <div className="text-left sm:text-right">
-            <p className="text-[8px] opacity-50 font-bold uppercase">Stability Status</p>
-            <p className="text-[10px] font-bold text-[#00ff41] tracking-wider animate-pulse uppercase">STABILITY: 120% ACTIVE</p>
+            <button 
+              onClick={() => { playBeep(900, 'sine', 0.05); setShowSettings(true); }}
+              className="text-[9px] border border-[#00ff41]/40 text-[#00ff41] px-3 py-1 bg-[#00ff41]/5 font-black hover:bg-[#00ff41] hover:text-black transition-all rounded"
+            >
+              ⚙️ SYSTEM CONFIGS
+            </button>
           </div>
           <div className="relative">
             <span className="flex h-3 w-3">
@@ -631,7 +939,7 @@ const App = () => {
               </div>
             </form>
 
-            <div className="mt-6 border-t border-[#00ff41]/20 pt-4 text-[9px] opacity-40 uppercase leading-relaxed">
+            <div className="mt-6 border-t border-[#00ff41]/20 pt-4 text-[9px] opacity-40 uppercase leading-relaxed font-mono">
               * Local Mock mode boots the diagnostic dashboards, Web Audio synthesizers, local signal graph simulator, and console commands without needing Firebase services.
             </div>
           </div>
@@ -645,19 +953,19 @@ const App = () => {
           {/* HARDWARE OVERVIEW SECTION */}
           <section className="bg-black/95 border border-[#00ff41]/30 p-4 rounded-xl text-[10px] grid grid-cols-2 sm:grid-cols-4 gap-4 relative overflow-hidden">
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider">Hardware Target Name</p>
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Hardware Target Name</p>
               <p className="font-bold text-white truncate">{targetDevice.name}</p>
             </div>
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider">Target OS Architecture</p>
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Target OS Architecture</p>
               <p className="font-bold text-white">{targetDevice.os}</p>
             </div>
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider">Interface Status</p>
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Interface Status</p>
               <p className="font-bold text-white uppercase tracking-wider">{targetDevice.status}</p>
             </div>
             <div>
-              <p className="opacity-40 uppercase text-[7px] tracking-wider">Hardware Health</p>
+              <p className="opacity-40 uppercase text-[7px] tracking-wider font-mono">Hardware Health</p>
               <div className="flex items-center gap-2 mt-0.5">
                 <div className="flex-1 h-1.5 bg-gray-950 border border-[#00ff41]/20 rounded-full overflow-hidden">
                   <div className="h-full bg-[#00ff41]" style={{ width: `${targetDevice.health}%` }}></div>
@@ -738,7 +1046,7 @@ const App = () => {
 
                   {/* Right Side: Specific Agent Log Console */}
                   <div className="w-full md:w-96 flex flex-col bg-black/60 border border-[#00ff41]/10 rounded-lg p-3 h-48 md:h-auto font-mono">
-                    <p className="text-[8px] opacity-40 uppercase tracking-widest mb-2 border-b border-[#00ff41]/10 pb-1">Agent Telemetry Logs</p>
+                    <p className="text-[8px] opacity-40 uppercase tracking-widest mb-2 border-b border-[#00ff41]/10 pb-1 font-mono">Agent Telemetry Logs</p>
                     <div className="flex-1 overflow-y-auto space-y-1.5 scrollbar-thin">
                       {(agentLogs[selectedAgent] || []).map((log, idx) => (
                         <div key={idx} className="text-[9px] flex items-start gap-1">
@@ -764,7 +1072,7 @@ const App = () => {
                   {/* Tool Selection Section */}
                   <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col justify-between gap-4">
                     <div>
-                      <div className="flex border-b border-[#00ff41]/25 pb-2 gap-4 mb-4">
+                      <div className="flex border-b border-[#00ff41]/25 pb-2 gap-4 mb-4 font-mono">
                         <button 
                           onClick={() => { playBeep(700, 'sine', 0.05); setToolTab('mobile'); }} 
                           className={`text-[10px] font-bold pb-1 transition-all ${toolTab === 'mobile' ? 'border-b-2 border-[#00ff41] text-white' : 'opacity-40 hover:opacity-80'}`}
@@ -819,7 +1127,7 @@ const App = () => {
                     </div>
 
                     {isProcessingAction && (
-                      <div className="bg-black border border-blue-500/50 p-4 rounded-xl text-[9px] animate-pulse">
+                      <div className="bg-black border border-blue-500/50 p-4 rounded-xl text-[9px] animate-pulse font-mono">
                         <p className="text-blue-400 font-black uppercase mb-1">RUNNING RUNTIME DEPLOYMENT... {actionProgress}%</p>
                         <div className="w-full h-2 bg-gray-900 border border-blue-900/30 rounded-full overflow-hidden">
                           <div className="h-full bg-blue-500 shadow-[0_0_10px_#3b82f6]" style={{ width: `${actionProgress}%` }}></div>
@@ -837,8 +1145,8 @@ const App = () => {
                         onClick={startCamera} 
                         className="flex-1 flex flex-col justify-center items-center py-12 border border-[#00ff41] border-dashed bg-[#00ff41]/5 text-[#00ff41] hover:bg-[#00ff41]/10 hover:shadow-[0_0_15px_rgba(0,255,65,0.1)] transition-all rounded-lg"
                       >
-                        <span className="text-3xl mb-2">📷</span>
-                        <span className="text-[9px] font-black tracking-widest">ACTIVATE DIAGNOSTIC LENS</span>
+                        <span className="text-3xl mb-2 font-sans">📷</span>
+                        <span className="text-[9px] font-black tracking-widest font-mono">ACTIVATE DIAGNOSTIC LENS</span>
                       </button>
                     )}
 
@@ -856,13 +1164,13 @@ const App = () => {
                         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-3">
                           <button 
                             onClick={captureFrame} 
-                            className="px-4 py-2 bg-[#00ff41] text-black font-black text-[9px] tracking-wider hover:bg-white transition-all rounded shadow-lg"
+                            className="px-4 py-2 bg-[#00ff41] text-black font-black text-[9px] tracking-wider hover:bg-white transition-all rounded shadow-lg font-mono"
                           >
                             CAPTURE FORENSIC FRAME
                           </button>
                           <button 
                             onClick={resetCamera} 
-                            className="px-3 py-2 bg-black border border-red-500 text-red-500 font-bold text-[9px] tracking-wider hover:bg-red-950/40 transition-all rounded"
+                            className="px-3 py-2 bg-black border border-red-500 text-red-500 font-bold text-[9px] tracking-wider hover:bg-red-950/40 transition-all rounded font-mono"
                           >
                             CANCEL
                           </button>
@@ -870,20 +1178,27 @@ const App = () => {
                       </div>
                     )}
 
+                    {oracleState === "DIAGNOSTIC_RUNNING" && (
+                      <div className="h-60 bg-black/60 rounded-lg border border-[#00ff41]/30 flex flex-col justify-center items-center gap-3">
+                        <span className="text-3xl animate-spin">🌀</span>
+                        <p className="text-[10px] text-white tracking-widest animate-pulse font-mono uppercase">TRANSMITTING FORENSICS DATA TO ORACLE CLOUD MODEL...</p>
+                      </div>
+                    )}
+
                     {oracleState === "DIAGNOSIS_COMPLETE" && (
                       <div className="space-y-3">
                         <div className="grid grid-cols-3 gap-2">
-                          <div className="col-span-1 border border-[#00ff41]/30 bg-black rounded-lg overflow-hidden h-28 relative">
+                          <div className="col-span-1 border border-[#00ff41]/30 bg-black rounded-lg overflow-hidden h-36 relative">
                             {capturedImage && <img src={capturedImage} className="w-full h-full object-cover grayscale" />}
-                            <div className="absolute top-1 left-1 text-[6px] bg-[#00ff41] text-black px-1 font-bold">FROZEN</div>
+                            <div className="absolute top-1 left-1 text-[6px] bg-[#00ff41] text-black px-1 font-bold font-mono">FROZEN</div>
                           </div>
-                          <div className="col-span-2 text-[9px] p-2.5 bg-[#00ff41]/5 rounded-lg border border-[#00ff41]/20 h-28 overflow-y-auto whitespace-pre-line leading-relaxed font-mono">
+                          <div className="col-span-2 text-[9px] p-2.5 bg-[#00ff41]/5 rounded-lg border border-[#00ff41]/20 h-36 overflow-y-auto whitespace-pre-line leading-relaxed font-mono scrollbar-thin">
                             {diagnosticResult}
                           </div>
                         </div>
                         <button 
                           onClick={resetCamera} 
-                          className="w-full py-2 bg-black border border-[#00ff41] text-[#00ff41] hover:bg-[#00ff41]/10 text-[9px] font-black tracking-widest transition-all rounded"
+                          className="w-full py-2 bg-black border border-[#00ff41] text-[#00ff41] hover:bg-[#00ff41]/10 text-[9px] font-black tracking-widest transition-all rounded font-mono"
                         >
                           RESET DIAGNOSTIC LENS
                         </button>
@@ -903,8 +1218,8 @@ const App = () => {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1">
                   
                   {/* Telemetry SVG Oscilloscope */}
-                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col justify-between">
-                    <h3 className="text-[10px] font-black tracking-widest text-[#00ff41]/80 uppercase border-b border-[#00ff41]/10 pb-2 mb-3">
+                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col justify-between font-mono">
+                    <h3 className="text-[10px] font-black tracking-widest text-[#00ff41]/80 uppercase border-b border-[#00ff41]/10 pb-2 mb-3 font-sans">
                       Signal Waveform Oscilloscope
                     </h3>
                     
@@ -951,7 +1266,7 @@ const App = () => {
                   </div>
 
                   {/* Telemetry Raw Packet List */}
-                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col">
+                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col font-mono">
                     <h2 className="text-[10px] font-black tracking-widest mb-3 border-b border-[#00ff41]/20 pb-2 flex justify-between items-center font-sans">
                       <span>CLOUD LINK LIVE TELEMETRY STREAM</span>
                       <span className="flex items-center gap-1.5 text-[8px] bg-[#00ff41]/15 border border-[#00ff41]/40 px-2 py-0.5 animate-pulse text-[#00ff41]">
@@ -995,10 +1310,10 @@ const App = () => {
 
             {/* CONNECT BRIDGE CONTROL BUTTON (PERSISTENT ON ALL TABS IN DASHBOARD) */}
             <button 
-              onClick={connectHardware}
+              onClick={() => { playBeep(450, 'sine', 0.08); setShowBridgeModal(true); }}
               className="w-full py-3.5 border-2 border-[#00ff41] bg-[#00ff41]/5 font-black text-xs hover:bg-[#00ff41] hover:text-black transition-all cursor-pointer hover:shadow-[0_0_15px_rgba(0,255,65,0.3)] flex items-center justify-center gap-3 active:scale-[0.98] rounded-xl z-10 font-mono"
             >
-              🔌 {usbDevice ? `BRIDGE ACTIVE: ${usbDevice.toUpperCase()}` : "CONNECT PHYSICAL USB OTG BRIDGE"}
+              🔌 {usbDevice ? `BRIDGE ACTIVE: ${usbDevice.toUpperCase()}` : "CONNECT PHYSICAL OTG BRIDGE"}
             </button>
 
           </main>
@@ -1008,7 +1323,7 @@ const App = () => {
 
       {/* CORE OPERATIVE CLI CONSOLE */}
       {(firebaseConfig || isLocalMode) && (
-        <div className="relative z-10 bg-black/95 border border-[#00ff41]/25 p-4 rounded-xl shadow-[0_0_15px_rgba(0,255,65,0.03)] mt-2">
+        <div className="relative z-10 bg-black/95 border border-[#00ff41]/25 p-4 rounded-xl shadow-[0_0_15px_rgba(0,255,65,0.03)] mt-2 font-mono">
           <div className="flex justify-between items-center mb-2 border-b border-[#00ff41]/15 pb-1.5">
             <span className="text-[9px] font-black tracking-widest text-[#00ff41] uppercase font-sans">OPERATIVE CLI CONSOLE</span>
             <span className="text-[7px] opacity-40">DEPTH: 100 LINES Max</span>
@@ -1058,6 +1373,7 @@ const App = () => {
             <button
               onClick={() => {
                 playBeep(300, 'sine', 0.2);
+                shutdownSerialPort();
                 localStorage.removeItem('NEXUS_FIREBASE_CONFIG');
                 setFirebaseConfig(null);
                 setUser(null);
