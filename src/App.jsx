@@ -4,6 +4,79 @@ import { initializeApp, getApps } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, addDoc } from 'firebase/firestore';
 
+// --- HUD THEME SCHEMES ---
+const HUD_THEMES = {
+  matrix: {
+    name: "Classic Matrix (Green)",
+    color: "#00ff41",
+    glow: "rgba(0, 255, 65, 0.15)",
+    glowPulse: "rgba(0, 255, 65, 0.4)",
+    borderGlow: "rgba(0, 255, 65, 0.3)",
+    borderPulse: "rgba(0, 255, 65, 0.8)",
+    dark: "#010306",
+    card: "#05070a"
+  },
+  cyber: {
+    name: "Aether Cyber (Cyan)",
+    color: "#00f0ff",
+    glow: "rgba(0, 240, 255, 0.15)",
+    glowPulse: "rgba(0, 240, 255, 0.4)",
+    borderGlow: "rgba(0, 240, 255, 0.3)",
+    borderPulse: "rgba(0, 240, 255, 0.8)",
+    dark: "#010408",
+    card: "#05090f"
+  },
+  warning: {
+    name: "Aegis Warning (Amber)",
+    color: "#ffb700",
+    glow: "rgba(255, 183, 0, 0.15)",
+    glowPulse: "rgba(255, 183, 0, 0.4)",
+    borderGlow: "rgba(255, 183, 0, 0.3)",
+    borderPulse: "rgba(255, 183, 0, 0.8)",
+    dark: "#080601",
+    card: "#0f0b04"
+  },
+  doom: {
+    name: "Doom Sector (Red)",
+    color: "#ff003c",
+    glow: "rgba(255, 0, 60, 0.15)",
+    glowPulse: "rgba(255, 0, 60, 0.4)",
+    borderGlow: "rgba(255, 0, 60, 0.3)",
+    borderPulse: "rgba(255, 0, 60, 0.8)",
+    dark: "#080102",
+    card: "#0f0406"
+  },
+  fusion: {
+    name: "Fusion Plasma (Purple)",
+    color: "#d400ff",
+    glow: "rgba(212, 0, 255, 0.15)",
+    glowPulse: "rgba(212, 0, 255, 0.4)",
+    borderGlow: "rgba(212, 0, 255, 0.3)",
+    borderPulse: "rgba(212, 0, 255, 0.8)",
+    dark: "#07010a",
+    card: "#0c0412"
+  }
+};
+
+const applyTheme = (themeKey) => {
+  const theme = HUD_THEMES[themeKey] || HUD_THEMES.matrix;
+  const root = document.documentElement;
+  root.style.setProperty('--hud-color', theme.color);
+  root.style.setProperty('--hud-glow', theme.glow);
+  root.style.setProperty('--hud-glow-pulse', theme.glowPulse);
+  root.style.setProperty('--hud-border-glow', theme.borderGlow);
+  root.style.setProperty('--hud-border-pulse', theme.borderPulse);
+  root.style.setProperty('--hud-dark', theme.dark);
+  root.style.setProperty('--hud-card', theme.card);
+};
+
+// --- ORACLE AI PROMPT PRESETS ---
+const PROMPT_PRESETS = {
+  defect: "You are Agent Oracle, a specialized hardware recovery and board-level forensics engineer. Analyze this visual capture of a motherboard/hardware component. Identify the board type, locate potential failures (such as capacitor bulge, burnt tracks, corrosion, disconnected headers, mechanical stress, or bad solder joints), state the likely fault and suggest step-by-step repair or recovery instructions. Be specific, technical, and concise.",
+  ocr: "You are Agent Oracle, a microelectronics OCR analyzer. Read all markings, serial numbers, labels, manufacturer logos, and revision codes visible on the microchips or the PCB. Output a structured listing of all identified components, part numbers, manufacture dates, and pin 1 indicator locations.",
+  solder: "You are Agent Oracle, a quality control audit systems engineer. Inspect all visible solder joints, headers, surface-mount components, and vias in this capture. Evaluate the solder quality (look for cold joints, bridged pads, voiding, insufficient wetting, or cracked joints). List all suspect joints with coordinates or descriptions and recommend corrective rework action."
+};
+
 const App = () => {
   // --- FIREBASE CONFIGURATION SAFE LOADER ---
   const [firebaseConfig, setFirebaseConfig] = useState(() => {
@@ -56,7 +129,7 @@ const App = () => {
 
   // Tabs & Navigation
   const [view, setView] = useState('agents'); // 'agents', 'diagnostics', 'telemetry'
-  const [toolTab, setToolTab] = useState('mobile'); // 'mobile', 'pc'
+  const [toolTab, setToolTab] = useState('mobile'); // 'mobile', 'pc', 'serial'
   const [selectedAgent, setSelectedAgent] = useState('Oracle');
   
   // Settings & Configurations
@@ -66,6 +139,9 @@ const App = () => {
   const [serialBaudRate, setSerialBaudRate] = useState(() => localStorage.getItem('NEXUS_SERIAL_BAUD_RATE') || '115200');
   const [audioEnabled, setAudioEnabled] = useState(() => localStorage.getItem('NEXUS_AUDIO_ENABLED') !== 'false');
   const [audioVolume, setAudioVolume] = useState(() => parseFloat(localStorage.getItem('NEXUS_AUDIO_VOLUME') || '0.04'));
+
+  // Theme Settings
+  const [activeTheme, setActiveTheme] = useState(() => localStorage.getItem('NEXUS_HUD_THEME') || 'matrix');
 
   // Camera Settings
   const [cameraFilter, setCameraFilter] = useState('none'); // 'none', 'grayscale', 'contrast', 'night-vision', 'thermal'
@@ -82,6 +158,14 @@ const App = () => {
   const [cameraExposure, setCameraExposure] = useState(0); // EV offset
   const [cameraOverlay, setCameraOverlay] = useState('none'); // 'none', 'reticle', 'grid', 'roi'
   const [isCameraFrozen, setIsCameraFrozen] = useState(false);
+
+  // Gemini Prompt Settings (Oracle Presets)
+  const [oraclePromptPreset, setOraclePromptPreset] = useState('defect'); // 'defect', 'ocr', 'solder', 'custom'
+  const [oracleCustomPrompt, setOracleCustomPrompt] = useState('');
+
+  // Bidirectional WebSerial Console States
+  const [serialTxInput, setSerialTxInput] = useState('');
+  const [serialTxTerminator, setSerialTxTerminator] = useState('\\r\\n'); // '\r\n', '\n', '\r', 'none'
 
   // Advanced States
   const [aegisStatus, setAegisStatus] = useState("SHIELD_ACTIVE"); // "SHIELD_ACTIVE", "THREAT_BLOCKED"
@@ -112,12 +196,18 @@ const App = () => {
   const [oscAmplitude, setOscAmplitude] = useState(20);
   const [oscFrozen, setOscFrozen] = useState(false);
 
-  // Audio Sequencer States
+  // Telemetry Audio Sequencer States
   const [sequencerActive, setSequencerActive] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [sequencerSteps, setSequencerSteps] = useState([true, false, true, false, true, true, false, false]);
   const [sequencerPitches, setSequencerPitches] = useState([440, 480, 520, 580, 640, 680, 720, 800]);
   const [sequencerSpeed, setSequencerSpeed] = useState(250); // step rate in ms
+
+  // Live Audio Signal Test Generator State
+  const [audioGenActive, setAudioGenActive] = useState(false);
+
+  // Telemetry Packet Details Inspector State
+  const [selectedPacket, setSelectedPacket] = useState(null);
 
   // Hex Dump Analyzer States
   const [fileName, setFileName] = useState('');
@@ -151,6 +241,14 @@ const App = () => {
   const serialPortRef = useRef(null);
   const serialReaderRef = useRef(null);
 
+  // Audio nodes refs
+  const audioOscRef = useRef(null);
+  const audioGainRef = useRef(null);
+  const audioCtxRef = useRef(null);
+
+  // Sine offset for scope representation
+  const [sineOffset, setSineOffset] = useState(0);
+
   // Save Settings Helpers
   const saveGeminiKey = (key) => {
     setGeminiApiKey(key);
@@ -163,11 +261,20 @@ const App = () => {
   const saveAudioEnabled = (val) => {
     setAudioEnabled(val);
     localStorage.setItem('NEXUS_AUDIO_ENABLED', val ? 'true' : 'false');
+    if (!val) {
+      setAudioGenActive(false);
+    }
   };
   const saveAudioVolume = (val) => {
     setAudioVolume(val);
     localStorage.setItem('NEXUS_AUDIO_VOLUME', val.toString());
   };
+
+  // --- DYNAMIC THEMING EFFECT ---
+  useEffect(() => {
+    applyTheme(activeTheme);
+    localStorage.setItem('NEXUS_HUD_THEME', activeTheme);
+  }, [activeTheme]);
 
   // --- AUDIO SYNTHESIZER ENGINE (WEB AUDIO API) ---
   const playBeep = (freq = 800, type = 'sine', duration = 0.08) => {
@@ -193,6 +300,10 @@ const App = () => {
     } catch (e) {
       console.warn("Audio context blocked or unsupported", e);
     }
+  };
+
+  const playHapticClick = () => {
+    playBeep(180, 'sine', 0.03);
   };
 
   const playAlarm = () => {
@@ -273,6 +384,72 @@ const App = () => {
     }, 4500);
   };
 
+  // --- LIVE AUDIO FUNCTION GENERATOR EFFECT ---
+  const startAudioGenerator = () => {
+    if (!audioEnabled || audioVolume === 0) return;
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      
+      osc.type = oscWaveform === 'noise' ? 'sawtooth' : oscWaveform;
+      osc.frequency.setValueAtTime(oscFrequency * 10, ctx.currentTime);
+      gain.gain.setValueAtTime(audioVolume * (oscAmplitude / 45), ctx.currentTime);
+      
+      osc.start();
+      audioOscRef.current = osc;
+      audioGainRef.current = gain;
+      logTerminal(`SYS: Audio Signal generator active at ${oscFrequency * 10}Hz (${oscWaveform.toUpperCase()})`);
+    } catch(e) {
+      console.warn("Signal generator init failed", e);
+    }
+  };
+
+  const stopAudioGenerator = () => {
+    if (audioOscRef.current) {
+      try { audioOscRef.current.stop(); } catch(e){}
+      audioOscRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      try { audioCtxRef.current.close(); } catch(e){}
+      audioCtxRef.current = null;
+    }
+    audioGainRef.current = null;
+  };
+
+  useEffect(() => {
+    if (audioGenActive && audioOscRef.current && audioCtxRef.current) {
+      try {
+        audioOscRef.current.frequency.setValueAtTime(oscFrequency * 10, audioCtxRef.current.currentTime);
+        audioOscRef.current.type = oscWaveform === 'noise' ? 'sawtooth' : oscWaveform;
+      } catch(e){}
+    }
+  }, [oscFrequency, oscWaveform, audioGenActive]);
+
+  useEffect(() => {
+    if (audioGenActive && audioGainRef.current && audioCtxRef.current) {
+      try {
+        audioGainRef.current.gain.setValueAtTime(audioVolume * (oscAmplitude / 45), audioCtxRef.current.currentTime);
+      } catch(e){}
+    }
+  }, [oscAmplitude, audioVolume, audioGenActive]);
+
+  useEffect(() => {
+    if (audioGenActive) {
+      startAudioGenerator();
+    } else {
+      stopAudioGenerator();
+    }
+    return () => stopAudioGenerator();
+  }, [audioGenActive]);
+
   // --- INTERACTIVE TERMINAL LOGGER ---
   const logTerminal = (msg) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -326,6 +503,15 @@ const App = () => {
     }, 2000);
     return () => clearInterval(interval);
   }, []);
+
+  // Oscilloscope animated math sweep
+  useEffect(() => {
+    if (oscFrozen) return;
+    const interval = setInterval(() => {
+      setSineOffset(prev => (prev + 0.15) % (Math.PI * 2));
+    }, 30);
+    return () => clearInterval(interval);
+  }, [oscFrozen]);
 
   // --- PHYSICAL OTG PLUG-IN / PLUG-OUT HARDWARE DETECTORS ---
   useEffect(() => {
@@ -705,6 +891,81 @@ const App = () => {
     }
   };
 
+  // --- BIDIRECTIONAL WEBSERIAL TRANSMITTER (TX) ---
+  const sendSerialData = async () => {
+    if (!serialPortRef.current && !isLocalMode) {
+      logTerminal("WEBSERIAL: Transmission failed. No active port connection.");
+      addToast("SERIAL TRANSMIT FAILED", "Establish active WebSerial link first.", "alert");
+      return;
+    }
+    
+    const textToSend = serialTxInput;
+    if (!textToSend) return;
+    
+    playBeep(700, 'sine', 0.05);
+    
+    let finalStr = textToSend;
+    if (serialTxTerminator === '\\r\\n') finalStr += '\r\n';
+    else if (serialTxTerminator === '\\n') finalStr += '\n';
+    else if (serialTxTerminator === '\\r') finalStr += '\r';
+    
+    logTerminal(`SERIAL TX >> ${textToSend}`);
+    
+    setLiveData(prev => [
+      {
+        id: `serial-tx-${Date.now()}`,
+        node: 'NEXUS_TX',
+        device: textToSend,
+        timestamp: Date.now(),
+        status: 'TX'
+      },
+      ...prev.slice(0, 24)
+    ]);
+    
+    if (isLocalMode) {
+      setTimeout(() => {
+        const cleanCmd = textToSend.toLowerCase();
+        let simResponse = `ACK: CMD "${textToSend}" EXECUTED`;
+        if (cleanCmd.includes('status')) {
+          simResponse = `RX: STATUS=OK, TEMP=42C, VOLTAGE=4.95V`;
+        } else if (cleanCmd.includes('help')) {
+          simResponse = `RX: AVAILABLE: status, reboot, debug_on, debug_off`;
+        } else if (cleanCmd.includes('reboot')) {
+          simResponse = `RX: SYSTEM REBOOTING... INITIALIZING BUS`;
+        }
+        
+        logTerminal(`SERIAL RX << ${simResponse}`);
+        setLiveData(prev => [
+          {
+            id: `serial-pkt-${Date.now()}`,
+            node: 'UART_BRIDGE',
+            device: simResponse,
+            timestamp: Date.now(),
+            status: 'RX'
+          },
+          ...prev.slice(0, 24)
+        ]);
+        setPacketsPerSec(prev => prev + 1);
+        playBeep(600, 'sine', 0.05);
+      }, 800);
+      
+      setSerialTxInput('');
+      return;
+    }
+    
+    try {
+      const encoder = new TextEncoder();
+      const writer = serialPortRef.current.writable.getWriter();
+      await writer.write(encoder.encode(finalStr));
+      writer.releaseLock();
+      logTerminal("WEBSERIAL: Command packet transmitted successfully.");
+      setSerialTxInput('');
+    } catch (err) {
+      logTerminal(`SERIAL TX ERROR: ${err.message}`);
+      addToast("SERIAL TRANSMIT FAILED", err.message, "alert");
+    }
+  };
+
   // --- FORENSIC FILE BINARY LOAD (HEX DUMP BUILDER) ---
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -752,6 +1013,46 @@ const App = () => {
     reader.readAsArrayBuffer(file);
   };
 
+  // --- TELEMETRY EXPORT DUMPS ---
+  const exportTelemetryCSV = () => {
+    playSuccessChime();
+    let csvContent = "data:text/csv;charset=utf-8,ID,Timestamp,Node,Device,Status\n";
+    liveData.forEach(item => {
+      const time = new Date(item.timestamp).toISOString();
+      const cleanDev = (item.device || '').replace(/"/g, '""');
+      csvContent += `${item.id},"${time}",${item.node},"${cleanDev}",${item.status || 'OK'}\n`;
+    });
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Nexus_Telemetry_Dump_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    logTerminal("TELEMETRY: Telemetry logs exported to CSV.");
+  };
+
+  const exportTelemetryJSON = () => {
+    playSuccessChime();
+    const jsonStr = JSON.stringify(liveData, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Nexus_Telemetry_Dump_${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    logTerminal("TELEMETRY: Telemetry logs exported to JSON.");
+  };
+
+  const clearTelemetryLogs = () => {
+    playBeep(400, 'sine', 0.08);
+    setLiveData([]);
+    logTerminal("TELEMETRY: Local telemetry log buffer cleared.");
+  };
+
   // --- DIAGNOSTICS REPORT EXPORTER ---
   const exportDiagnosticsReport = () => {
     playSuccessChime();
@@ -766,6 +1067,7 @@ System Integrity Health: ${targetDevice.health}%
 --------------------------------------------------------------------------------
 ## AGENT ORACLE DIAGNOSTICS REPORT
 Visual Forensics Component Inspection Analysis (Gemini 2.5 Flash):
+- Preset Profile Standard: ${oraclePromptPreset.toUpperCase()}
 
 ${diagnosticResult || "No diagnostic scan performed yet."}
 
@@ -849,7 +1151,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
     }
   };
 
-  // --- DIAGNOSTIC CAMERA LENS HANDLERS (CAMERA AND LENS OPTIMIZATIONS) ---
+  // --- DIAGNOSTIC CAMERA LENS HANDLERS ---
   const enumerateCameras = async () => {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
@@ -883,11 +1185,21 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
     return filterStr;
   };
 
+  // RESOLVING UNIMPLEMENTED METHOD BUG IN V6.2
+  const getCameraVideoStyle = () => {
+    const filter = getCanvasFilterString();
+    const transform = !hasNativeZoom && cameraZoom > 1 ? `scale(${cameraZoom})` : 'none';
+    return {
+      filter,
+      transform,
+      transformOrigin: 'center center'
+    };
+  };
+
   const startCamera = async () => {
     playBeep(350, 'sine', 0.1);
     logTerminal("ORACLE: Accessing target camera stream...");
     
-    // Resolve resolution constraints
     let widthConstraint = 1280;
     let heightConstraint = 720;
     if (cameraResolution === '4k') { widthConstraint = 3840; heightConstraint = 2160; }
@@ -925,7 +1237,6 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
       setOracleState("LENS_ACTIVE");
       logTerminal(`ORACLE: Diagnostic Lens camera active (${cameraResolution}).`);
       
-      // Keep list updated
       enumerateCameras();
     } catch (e) { 
       logTerminal("ORACLE: Camera access denied / constraints unsupported."); 
@@ -975,14 +1286,12 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
     const videoW = video.videoWidth || 640;
     const videoH = video.videoHeight || 480;
     
-    // Set static canvas size for capture
     canvas.width = 800;
     canvas.height = 600;
     
     ctx.clearRect(0, 0, 800, 600);
     ctx.filter = getCanvasFilterString();
     
-    // Calculate cropping for software zoom fallback
     const sWidth = hasNativeZoom ? videoW : (videoW / cameraZoom);
     const sHeight = hasNativeZoom ? videoH : (videoH / cameraZoom);
     const sx = hasNativeZoom ? 0 : (videoW - sWidth) / 2;
@@ -1007,6 +1316,10 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
     if (!capturedImage) return;
     playBeep(520, 'sine', 0.1);
     
+    const targetPrompt = oraclePromptPreset === 'custom' 
+      ? (oracleCustomPrompt || "Analyze this microelectronics component.") 
+      : PROMPT_PRESETS[oraclePromptPreset];
+
     if (geminiApiKey) {
       logTerminal("ORACLE: Transmitting forensic frame to Gemini API Visual Forensics...");
       setOracleState("DIAGNOSTIC_RUNNING");
@@ -1022,7 +1335,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
           body: JSON.stringify({
             contents: [{
               parts: [
-                { text: "You are Agent Oracle, a specialized hardware recovery and board-level forensics engineer. Analyze this visual capture of a motherboard/hardware component. Identify the board type, locate potential failures (such as capacitor bulge, burnt tracks, corrosion, disconnected headers, mechanical stress, or bad solder joints), state the likely fault and suggest step-by-step repair or recovery instructions. Be specific, technical, and concise." },
+                { text: targetPrompt },
                 {
                   inlineData: {
                     mimeType: "image/png",
@@ -1053,7 +1366,15 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
 
     } else {
       setOracleState("DIAGNOSIS_COMPLETE");
-      setDiagnosticResult("SIMULATED DIAGNOSTIC (Enter Gemini Key in Settings for real inspection):\n- Phoenix-Mobile: Operating loop resolved by active firmware state restoration.\n- Resolution: Deploy standard image flash via secure OTG.\n- Aegis-Forensics: Memory cache clean sweep executed successfully.");
+      let mockRes = "SIMULATED INSPECTION REPORT (No API key):\n";
+      if (oraclePromptPreset === 'defect') {
+        mockRes += "- Failure Mode: Suspected burnt trace around clock crystallizer circuit.\n- Solution: Solder bridging required. Re-flash kernel via Phoenix tools.";
+      } else if (oraclePromptPreset === 'ocr') {
+        mockRes += "- IC1: STM32F407VGT6 (ARM Cortex-M4 @168MHz)\n- Flash: 1MB, SRAM: 196KB\n- Revision: B (Manufacture date code 2420)";
+      } else {
+        mockRes += "- Joint Pin 3: Solder bridge identified between clock and Ground bus.\n- Resolution: Rework via reflow braid recommended.";
+      }
+      setDiagnosticResult(mockRes);
       logTerminal("ORACLE: Simulated frame analysis loaded. Input API Key in Settings for live diagnostics.");
     }
   };
@@ -1222,17 +1543,8 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
     return 50 + val * oscAmplitude;
   };
 
-  // Return the appropriate filter CSS class based on selection
-  const getCameraFilterClass = () => {
-    if (cameraFilter === 'grayscale') return 'grayscale contrast-125 brightness-110';
-    if (cameraFilter === 'contrast') return 'contrast-200 saturate-150 brightness-95';
-    if (cameraFilter === 'night-vision') return 'sepia-[100%] [filter:sepia(1)_hue-rotate(90deg)_saturate(3.5)_contrast(1.5)_brightness(1.15)] animate-flicker';
-    if (cameraFilter === 'thermal') return '[filter:invert(1)_hue-rotate(180deg)_saturate(2.5)_contrast(1.6)_brightness(1.15)]';
-    return '';
-  };
-
   return (
-    <div className="crt-overlay min-h-screen bg-[#010306] text-[#00ff41] font-mono p-4 flex flex-col gap-4 selection:bg-[#00ff41]/30 overflow-x-hidden relative">
+    <div className="crt-overlay min-h-screen bg-[var(--hud-dark)] text-[var(--hud-color)] font-mono p-4 flex flex-col gap-4 selection:bg-[var(--hud-color)]/30 overflow-x-hidden relative">
       
       {/* BACKGROUND GRID OVERLAY */}
       <div className="hud-grid fixed inset-0 pointer-events-none opacity-40 z-0"></div>
@@ -1251,11 +1563,56 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
         </div>
       )}
 
+      {/* PACKET DETAIL INSPECTOR MODAL */}
+      {selectedPacket && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-[var(--hud-card)] border border-[var(--hud-color)] p-6 rounded-xl shadow-[0_0_30px_var(--hud-glow-pulse)] font-mono">
+            <div className="flex justify-between items-center border-b border-[var(--hud-color)]/25 pb-2 mb-4">
+              <h3 className="text-xs font-black tracking-widest text-white font-sans uppercase">
+                🔍 TELEMETRY PACKET INSPECTOR
+              </h3>
+              <button 
+                onClick={() => { playHapticClick(); setSelectedPacket(null); }} 
+                className="text-[9px] border border-red-500/40 text-red-500 px-2 py-0.5 hover:bg-red-500 hover:text-black transition-all rounded cursor-pointer"
+              >
+                CLOSE
+              </button>
+            </div>
+            
+            <div className="space-y-3 text-[8.5px] text-gray-300">
+              <div className="grid grid-cols-3 border-b border-[var(--hud-color)]/10 pb-1">
+                <span className="opacity-50">PACKET ID:</span>
+                <span className="col-span-2 text-white font-bold">{selectedPacket.id}</span>
+              </div>
+              <div className="grid grid-cols-3 border-b border-[var(--hud-color)]/10 pb-1">
+                <span className="opacity-50">TIMESTAMP:</span>
+                <span className="col-span-2 text-white">{new Date(selectedPacket.timestamp).toLocaleString()} ({selectedPacket.timestamp})</span>
+              </div>
+              <div className="grid grid-cols-3 border-b border-[var(--hud-color)]/10 pb-1">
+                <span className="opacity-50">SOURCE NODE:</span>
+                <span className="col-span-2 text-cyan-400 font-bold">{selectedPacket.node}</span>
+              </div>
+              <div className="grid grid-cols-3 border-b border-[var(--hud-color)]/10 pb-1">
+                <span className="opacity-50">INTERFACE STATUS:</span>
+                <span className="col-span-2 text-[var(--hud-color)]">{selectedPacket.status || 'OK'}</span>
+              </div>
+              
+              <div className="space-y-1 pt-2">
+                <span className="opacity-50 uppercase block">Raw Payload Data / Message:</span>
+                <div className="bg-black border border-[var(--hud-color)]/20 p-3 rounded-lg text-white font-mono text-[9px] h-32 overflow-y-auto whitespace-pre-wrap select-all leading-normal">
+                  {selectedPacket.device}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* WEBUSB vs WEBSERIAL BRIDGE MODAL */}
       {showBridgeModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-[#05070a] border border-[#00ff41]/60 p-6 rounded-xl shadow-[0_0_30px_rgba(0,255,65,0.2)]">
-            <h3 className="text-xs font-black tracking-widest text-white border-b border-[#00ff41]/25 pb-2 mb-4 font-sans uppercase">
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[var(--hud-card)] border border-[var(--hud-color)]/60 p-6 rounded-xl shadow-[0_0_30px_var(--hud-glow-pulse)]">
+            <h3 className="text-xs font-black tracking-widest text-white border-b border-[var(--hud-color)]/25 pb-2 mb-4 font-sans uppercase">
               SELECT TELEMETRY INTERFACE BRIDGE
             </h3>
             <p className="text-[9px] opacity-75 leading-relaxed mb-5 uppercase">
@@ -1263,23 +1620,23 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
             </p>
             <div className="space-y-3">
               <button 
-                onClick={() => { setShowBridgeModal(false); connectHardware(); }} 
-                className="w-full py-3 bg-black border border-[#00ff41]/40 hover:bg-[#00ff41]/10 text-white font-bold text-[10px] tracking-wider transition-all rounded-lg flex items-center justify-between px-4"
+                onClick={() => { playHapticClick(); setShowBridgeModal(false); connectHardware(); }} 
+                className="w-full py-3 bg-black border border-[var(--hud-color)]/45 hover:bg-[var(--hud-color)]/10 text-white font-bold text-[10px] tracking-wider transition-all rounded-lg flex items-center justify-between px-4 cursor-pointer"
               >
                 <span>🔌 WEBUSB PHYSICAL DEVICE</span>
-                <span className="text-[8px] bg-[#00ff41]/20 px-2 py-0.5 rounded text-[#00ff41]">ACTIVE SCAN</span>
+                <span className="text-[8px] bg-[var(--hud-color)]/20 px-2 py-0.5 rounded text-[var(--hud-color)]">ACTIVE SCAN</span>
               </button>
               <button 
-                onClick={() => { setShowBridgeModal(false); connectSerialHardware(); }} 
-                className="w-full py-3 bg-black border border-[#00ff41]/40 hover:bg-[#00ff41]/10 text-white font-bold text-[10px] tracking-wider transition-all rounded-lg flex items-center justify-between px-4"
+                onClick={() => { playHapticClick(); setShowBridgeModal(false); connectSerialHardware(); }} 
+                className="w-full py-3 bg-black border border-[var(--hud-color)]/45 hover:bg-[var(--hud-color)]/10 text-white font-bold text-[10px] tracking-wider transition-all rounded-lg flex items-center justify-between px-4 cursor-pointer"
               >
                 <span>📺 WEBSERIAL UART TERMINAL</span>
-                <span className="text-[8px] bg-[#00ff41]/20 px-2 py-0.5 rounded text-[#00ff41]">{serialBaudRate} BAUD</span>
+                <span className="text-[8px] bg-[var(--hud-color)]/20 px-2 py-0.5 rounded text-[var(--hud-color)]">{serialBaudRate} BAUD</span>
               </button>
             </div>
             <button 
-              onClick={() => { playBeep(350, 'sine', 0.05); setShowBridgeModal(false); }} 
-              className="w-full mt-5 py-2 bg-red-950/20 border border-red-500/40 text-red-500 font-black text-[9px] tracking-wider hover:bg-red-500 hover:text-black transition-all rounded-md"
+              onClick={() => { playHapticClick(); setShowBridgeModal(false); }} 
+              className="w-full mt-5 py-2 bg-red-950/20 border border-red-500/40 text-red-500 font-black text-[9px] tracking-wider hover:bg-red-500 hover:text-black transition-all rounded-md cursor-pointer"
             >
               CLOSE
             </button>
@@ -1289,33 +1646,49 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
 
       {/* SLIDE-OUT SYSTEM CONFIGURATION DRAWER */}
       {showSettings && (
-        <div className="fixed inset-y-0 right-0 w-80 bg-black/95 border-l border-[#00ff41]/40 z-[90] p-5 shadow-[0_0_40px_rgba(0,255,65,0.15)] flex flex-col justify-between backdrop-blur-md animate-in slide-in-from-right duration-300">
+        <div className="fixed inset-y-0 right-0 w-80 bg-black/95 border-l border-[var(--hud-color)]/40 z-[90] p-5 shadow-[0_0_40px_var(--hud-glow-pulse)] flex flex-col justify-between backdrop-blur-md animate-in slide-in-from-right duration-300">
           <div className="space-y-6">
-            <div className="flex justify-between items-center border-b border-[#00ff41]/20 pb-2">
+            <div className="flex justify-between items-center border-b border-[var(--hud-color)]/20 pb-2">
               <h3 className="text-xs font-black tracking-widest text-white font-sans uppercase">[SYSTEM CONFIGURATION]</h3>
-              <button onClick={() => { playBeep(300, 'sine', 0.06); setShowSettings(false); }} className="text-[9px] border border-red-500/40 text-red-500 px-2 py-0.5 hover:bg-red-500 hover:text-black transition-all rounded">CLOSE</button>
+              <button onClick={() => { playHapticClick(); setShowSettings(false); }} className="text-[9px] border border-red-500/40 text-red-500 px-2 py-0.5 hover:bg-red-500 hover:text-black transition-all rounded cursor-pointer">CLOSE</button>
+            </div>
+
+            {/* Dynamic Color Theme Switcher */}
+            <div className="space-y-1.5">
+              <label className="block text-[8px] font-bold uppercase tracking-wider text-[var(--hud-color)]/70">HUD Color Matrix Theme</label>
+              <select
+                value={activeTheme}
+                onChange={(e) => { playHapticClick(); setActiveTheme(e.target.value); }}
+                className="w-full bg-[#03060a] border border-[var(--hud-color)]/30 p-2 text-[9px] text-[var(--hud-color)] focus:outline-none focus:border-[var(--hud-color)]/80 rounded font-mono"
+              >
+                {Object.keys(HUD_THEMES).map(themeKey => (
+                  <option key={themeKey} value={themeKey}>
+                    {HUD_THEMES[themeKey].name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Gemini API Key input */}
             <div className="space-y-1.5">
-              <label className="block text-[8px] font-bold uppercase tracking-wider text-[#00ff41]/70">Google Gemini API Key</label>
+              <label className="block text-[8px] font-bold uppercase tracking-wider text-[var(--hud-color)]/70">Google Gemini API Key</label>
               <input 
                 type="password"
                 value={geminiApiKey}
                 onChange={(e) => saveGeminiKey(e.target.value)}
                 placeholder="Enter AI API Key (gemini-...)"
-                className="w-full bg-[#03060a] border border-[#00ff41]/30 p-2 text-[9px] text-[#00ff41] focus:outline-none focus:border-[#00ff41]/80 rounded font-mono"
+                className="w-full bg-[#03060a] border border-[var(--hud-color)]/30 p-2 text-[9px] text-[var(--hud-color)] focus:outline-none focus:border-[var(--hud-color)]/80 rounded font-mono"
               />
               <p className="text-[6.5px] opacity-45 uppercase">Saved locally. Needed for real-time visual fault diagnosis using Gemini models.</p>
             </div>
 
             {/* WebSerial Baud Rate Select */}
             <div className="space-y-1.5">
-              <label className="block text-[8px] font-bold uppercase tracking-wider text-[#00ff41]/70">UART Serial Baud Rate</label>
+              <label className="block text-[8px] font-bold uppercase tracking-wider text-[var(--hud-color)]/70">UART Serial Baud Rate</label>
               <select
                 value={serialBaudRate}
                 onChange={(e) => saveBaudRate(e.target.value)}
-                className="w-full bg-[#03060a] border border-[#00ff41]/30 p-2 text-[9px] text-[#00ff41] focus:outline-none focus:border-[#00ff41]/80 rounded font-mono"
+                className="w-full bg-[#03060a] border border-[var(--hud-color)]/30 p-2 text-[9px] text-[var(--hud-color)] focus:outline-none focus:border-[var(--hud-color)]/80 rounded font-mono"
               >
                 <option value="9600">9600 BAUD (Standard Arduino)</option>
                 <option value="19200">19200 BAUD</option>
@@ -1328,15 +1701,15 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
             {/* Audio volume settings */}
             <div className="space-y-2">
               <div className="flex justify-between items-center">
-                <label className="block text-[8px] font-bold uppercase tracking-wider text-[#00ff41]/70">Synthesizer Volume</label>
+                <label className="block text-[8px] font-bold uppercase tracking-wider text-[var(--hud-color)]/70">Synthesizer Volume</label>
                 <span className="text-[8px] text-white">{Math.round(audioVolume * 1000)}%</span>
               </div>
               <div className="flex items-center gap-3">
                 <input 
                   type="checkbox"
                   checked={audioEnabled}
-                  onChange={(e) => saveAudioEnabled(e.target.checked)}
-                  className="accent-[#00ff41]"
+                  onChange={(e) => { playHapticClick(); saveAudioEnabled(e.target.checked); }}
+                  className="accent-[var(--hud-color)]"
                 />
                 <input 
                   type="range"
@@ -1346,26 +1719,26 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   value={audioVolume}
                   onChange={(e) => saveAudioVolume(parseFloat(e.target.value))}
                   disabled={!audioEnabled}
-                  className="flex-1 accent-[#00ff41] h-1 bg-gray-950 rounded-lg appearance-none cursor-pointer"
+                  className="flex-1 accent-[var(--hud-color)] h-1 bg-gray-950 rounded-lg appearance-none cursor-pointer"
                 />
               </div>
             </div>
           </div>
 
-          <div className="border-t border-[#00ff41]/20 pt-4 text-[7px] opacity-40 uppercase leading-relaxed font-mono">
+          <div className="border-t border-[var(--hud-color)]/20 pt-4 text-[7px] opacity-40 uppercase leading-relaxed font-mono">
             * Warning: Do not distribute configuration parameters. The zero-trust secure sandbox isolated environment prevents credential extraction leaks.
           </div>
         </div>
       )}
 
       {/* HEADER HUD */}
-      <header className="relative z-10 p-4 bg-black border border-[#00ff41]/20 rounded-xl flex flex-col sm:flex-row justify-between items-center gap-4 sticky top-0 backdrop-blur-md">
+      <header className="relative z-10 p-4 bg-black border border-[var(--hud-color)]/20 rounded-xl flex flex-col sm:flex-row justify-between items-center gap-4 sticky top-0 backdrop-blur-md">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 border-2 border-[#00ff41] flex items-center justify-center font-black animate-pulse shadow-[0_0_15px_rgba(0,255,65,0.4)] text-lg">
+          <div className="w-10 h-10 border-2 border-[var(--hud-color)] flex items-center justify-center font-black animate-pulse shadow-[0_0_15px_var(--hud-color)] text-lg">
             NX
           </div>
           <div>
-            <h1 className="text-xs font-black tracking-widest font-sans text-white">NEXUS TACTICAL OPERATING SYSTEM (v6.1)</h1>
+            <h1 className="text-xs font-black tracking-widest font-sans text-white">NEXUS TACTICAL OPERATING SYSTEM (v6.3)</h1>
             <p className="text-[8px] opacity-60 uppercase">Sovereign Agentic Hardware Diagnostic Platform</p>
           </div>
         </div>
@@ -1373,16 +1746,16 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
         <div className="flex items-center gap-6">
           <div className="text-left sm:text-right">
             <button 
-              onClick={() => { playBeep(900, 'sine', 0.05); setShowSettings(true); }}
-              className="text-[9px] border border-[#00ff41]/40 text-[#00ff41] px-3 py-1 bg-[#00ff41]/5 font-black hover:bg-[#00ff41] hover:text-black transition-all rounded"
+              onClick={() => { playHapticClick(); setShowSettings(true); }}
+              className="text-[9px] border border-[var(--hud-color)]/40 text-[var(--hud-color)] px-3 py-1 bg-[var(--hud-color)]/5 font-black hover:bg-[var(--hud-color)] hover:text-black transition-all rounded cursor-pointer"
             >
               ⚙️ SYSTEM CONFIGS
             </button>
           </div>
           <div className="relative">
             <span className="flex h-3 w-3">
-              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${user ? 'bg-[#00ff41]' : isLocalMode ? 'bg-yellow-400' : 'bg-red-500'}`}></span>
-              <span className={`relative inline-flex rounded-full h-3 w-3 ${user ? 'bg-[#00ff41]' : isLocalMode ? 'bg-yellow-400' : 'bg-red-500'}`}></span>
+              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${user ? 'bg-[var(--hud-color)]' : isLocalMode ? 'bg-yellow-400' : 'bg-red-500'}`}></span>
+              <span className={`relative inline-flex rounded-full h-3 w-3 ${user ? 'bg-[var(--hud-color)]' : isLocalMode ? 'bg-yellow-400' : 'bg-red-500'}`}></span>
             </span>
           </div>
         </div>
@@ -1391,8 +1764,8 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
       {/* FIREBASE INITIAL CONFIG CONFIGURATION SCREEN */}
       {!firebaseConfig && !isLocalMode && (
         <div className="relative z-20 flex-1 flex items-center justify-center p-2 md:p-6">
-          <div className="w-full max-w-2xl bg-black/95 border border-[#00ff41]/60 p-6 rounded-xl shadow-[0_0_40px_rgba(0,255,65,0.15)] animate-glow">
-            <div className="border-b border-[#00ff41]/30 pb-3 mb-6">
+          <div className="w-full max-w-2xl bg-black/95 border border-[var(--hud-color)]/60 p-6 rounded-xl shadow-[0_0_40px_var(--hud-glow)] animate-glow">
+            <div className="border-b border-[var(--hud-color)]/30 pb-3 mb-6">
               <h2 className="text-xs font-black tracking-widest flex justify-between font-sans">
                 <span>[CRITICAL CONSOLE BOOT SYSTEM]</span>
                 <span className="animate-pulse">▲ CONFIGURATION REQUIRED</span>
@@ -1402,7 +1775,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
 
             <form onSubmit={handleConfigSubmit} className="space-y-4">
               <div>
-                <label className="block text-[10px] font-bold mb-2 uppercase tracking-wider text-[#00ff41]/80">
+                <label className="block text-[10px] font-bold mb-2 uppercase tracking-wider text-[var(--hud-color)]/80">
                   Paste Firebase Config JSON Payload:
                 </label>
                 <textarea
@@ -1410,7 +1783,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   onChange={(e) => setConfigInput(e.target.value)}
                   placeholder={`{\n  "apiKey": "your-api-key",\n  "authDomain": "your-auth-domain",\n  "projectId": "your-project-id",\n  "storageBucket": "your-storage-bucket",\n  "messagingSenderId": "your-sender-id",\n  "appId": "your-app-id"\n}`}
                   rows={8}
-                  className="w-full bg-[#03060a] border border-[#00ff41]/30 p-3 text-[10px] text-[#00ff41] placeholder-[#00ff41]/20 focus:outline-none focus:border-[#00ff41]/80 font-mono resize-none transition-all rounded"
+                  className="w-full bg-[#03060a] border border-[var(--hud-color)]/30 p-3 text-[10px] text-[var(--hud-color)] placeholder-[var(--hud-color)]/20 focus:outline-none focus:border-[var(--hud-color)]/80 font-mono resize-none transition-all rounded"
                 />
               </div>
 
@@ -1423,7 +1796,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
               <div className="flex flex-col sm:flex-row gap-3 pt-2">
                 <button
                   type="submit"
-                  className="flex-1 py-3 border border-[#00ff41] bg-[#00ff41]/10 text-[#00ff41] text-[10px] font-black tracking-widest hover:bg-[#00ff41] hover:text-black hover:shadow-[0_0_15px_rgba(0,255,65,0.4)] transition-all cursor-pointer rounded"
+                  className="flex-1 py-3 border border-[var(--hud-color)] bg-[var(--hud-color)]/10 text-[var(--hud-color)] text-[10px] font-black tracking-widest hover:bg-[var(--hud-color)] hover:text-black hover:shadow-[0_0_15px_var(--hud-color)] transition-all cursor-pointer rounded"
                 >
                   ESTABLISH CLOUD NETWORK LINK
                 </button>
@@ -1436,35 +1809,34 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   }}
                   className="px-6 py-3 border border-yellow-500 bg-yellow-500/10 text-yellow-500 text-[10px] font-black tracking-widest hover:bg-yellow-500 hover:text-black transition-all cursor-pointer rounded"
                 >
-                  LOCAL MOCK TEST (v6.1)
+                  LOCAL MOCK TEST (v6.3)
                 </button>
               </div>
             </form>
 
-            <div className="mt-6 border-t border-[#00ff41]/20 pt-4 text-[9px] opacity-40 uppercase leading-relaxed font-mono">
+            <div className="mt-6 border-t border-[var(--hud-color)]/20 pt-4 text-[9px] opacity-40 uppercase leading-relaxed font-mono">
               * Local Mock mode boots the diagnostic dashboards, Web Audio synthesizers, local signal graph simulator, and console commands without needing Firebase services.
             </div>
           </div>
         </div>
       )}
 
-      {/* DASHBOARD SYSTEM INTERFACE (WHEN LOGGED IN OR       {/* DASHBOARD SYSTEM INTERFACE (WHEN LOGGED IN OR LOCAL MODE) */}
+      {/* DASHBOARD SYSTEM INTERFACE (WHEN LOGGED IN OR LOCAL MODE) */}
       {(firebaseConfig || isLocalMode) && (
         <div className="relative z-10 flex-1 flex flex-col lg:grid lg:grid-cols-12 gap-4 lg:h-[calc(100vh-140px)] lg:overflow-hidden">
           
           {/* COLUMN 1: LEFT SIDEBAR (Target Stats, SVG OTG Port, Device Tree) */}
-          {/* order-2 on mobile (stacks below main workspace), order-1 on desktop/landscape */}
           <aside className="order-2 lg:order-1 lg:col-span-3 flex flex-col gap-4 lg:overflow-y-auto lg:h-full scrollbar-thin">
             
             {/* TARGET DEVICE PROFILE */}
-            <div className="bg-black/95 border border-[#00ff41]/25 p-4 rounded-xl space-y-3 font-mono">
-              <div className="border-b border-[#00ff41]/15 pb-1">
+            <div className="bg-black/95 border border-[var(--hud-color)]/25 p-4 rounded-xl space-y-3 font-mono">
+              <div className="border-b border-[var(--hud-color)]/15 pb-1">
                 <span className="text-[8px] font-black uppercase text-white font-sans">Target Profile</span>
               </div>
               <div className="space-y-1">
                 <p className="font-bold text-white text-[11px] truncate">{targetDevice.name}</p>
                 <p className="text-[8.5px] opacity-65 truncate">{targetDevice.os}</p>
-                <p className="text-[7.5px] text-[#00ff41]/80 truncate">{targetDevice.status}</p>
+                <p className="text-[7.5px] text-[var(--hud-color)]/80 truncate">{targetDevice.status}</p>
               </div>
               
               <div className="space-y-1">
@@ -1473,7 +1845,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   <span>{cpuHistory[cpuHistory.length - 1]}%</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <svg className="w-full h-5 stroke-[#00ff41] fill-none" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <svg className="w-full h-5 stroke-[var(--hud-color)] fill-none" viewBox="0 0 100 30" preserveAspectRatio="none">
                     <polyline
                       strokeWidth="1.5"
                       points={cpuHistory.map((val, idx) => `${idx * 11},${30 - (val * 30 / 100)}`).join(' ')}
@@ -1488,7 +1860,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   <span>{ramHistory[ramHistory.length - 1]}%</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <svg className="w-full h-5 stroke-[#00ff41] fill-none" viewBox="0 0 100 30" preserveAspectRatio="none">
+                  <svg className="w-full h-5 stroke-[var(--hud-color)] fill-none" viewBox="0 0 100 30" preserveAspectRatio="none">
                     <polyline
                       strokeWidth="1.5"
                       points={ramHistory.map((val, idx) => `${idx * 11},${30 - (val * 30 / 100)}`).join(' ')}
@@ -1503,40 +1875,40 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   <span>{targetDevice.health}%</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <div className="flex-1 h-1.5 bg-gray-950 border border-[#00ff41]/20 rounded-full overflow-hidden">
-                    <div className="h-full bg-[#00ff41]" style={{ width: `${targetDevice.health}%` }}></div>
+                  <div className="flex-1 h-1.5 bg-gray-950 border border-[var(--hud-color)]/20 rounded-full overflow-hidden">
+                    <div className="h-full bg-[var(--hud-color)]" style={{ width: `${targetDevice.health}%` }}></div>
                   </div>
                 </div>
               </div>
             </div>
 
             {/* INTERACTIVE USB/OTG PORT VISUALIZER */}
-            <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col gap-3 font-mono">
-              <span className="text-[8px] font-black uppercase text-white border-b border-[#00ff41]/10 pb-1 w-full text-left font-sans">OTG Hardware Port</span>
+            <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex flex-col gap-3 font-mono">
+              <span className="text-[8px] font-black uppercase text-white border-b border-[var(--hud-color)]/10 pb-1 w-full text-left font-sans">OTG Hardware Port</span>
               
-              <div className="relative w-full h-24 flex items-center justify-center bg-black/60 rounded-lg border border-[#00ff41]/10 overflow-hidden">
+              <div className="relative w-full h-24 flex items-center justify-center bg-black/60 rounded-lg border border-[var(--hud-color)]/10 overflow-hidden">
                 <div className="hud-grid absolute inset-0 opacity-15"></div>
                 
                 <svg className="w-48 h-16" viewBox="0 0 280 100">
                   {/* USB Port Outline */}
-                  <rect x="30" y="35" width="60" height="30" rx="8" fill="none" stroke={usbDevice ? "#00ff41" : "#d97706"} strokeWidth="2" className={!usbDevice ? "animate-pulse" : ""} />
+                  <rect x="30" y="35" width="60" height="30" rx="8" fill="none" stroke={usbDevice ? "var(--hud-color)" : "#d97706"} strokeWidth="2" className={!usbDevice ? "animate-pulse" : ""} />
                   {/* Inner USB plug details */}
-                  <rect x="40" y="45" width="40" height="10" rx="2" fill={usbDevice ? "#00ff41" : "#d97706"} opacity="0.3" />
-                  <line x1="45" y1="50" x2="75" y2="50" stroke={usbDevice ? "#00ff41" : "#d97706"} strokeWidth="2" strokeDasharray="2,2" />
+                  <rect x="40" y="45" width="40" height="10" rx="2" fill={usbDevice ? "var(--hud-color)" : "#d97706"} opacity="0.3" />
+                  <line x1="45" y1="50" x2="75" y2="50" stroke={usbDevice ? "var(--hud-color)" : "#d97706"} strokeWidth="2" strokeDasharray="2,2" />
                   
                   {/* Connection Line */}
                   {usbDevice ? (
                     <>
                       {/* Cable Plugged In */}
-                      <path d="M 90 50 L 190 50" stroke="#00ff41" strokeWidth="3" className="animate-pulse" />
-                      <rect x="150" y="38" width="40" height="24" rx="4" fill="#00ff41" />
+                      <path d="M 90 50 L 190 50" stroke="var(--hud-color)" strokeWidth="3" className="animate-pulse" />
+                      <rect x="150" y="38" width="40" height="24" rx="4" fill="var(--hud-color)" />
                       <text x="170" y="52" fill="black" fontSize="7.5" fontWeight="bold" textAnchor="middle" fontFamily="monospace">USB-C</text>
                       
                       {/* Animated signal dots */}
                       <circle cx="130" cy="50" r="2.5" fill="#ffffff" className="animate-ping">
                         <animate attributeName="cx" from="180" to="90" dur="1.5s" repeatCount="indefinite" />
                       </circle>
-                      <circle cx="110" cy="50" r="2.5" fill="#00ff41">
+                      <circle cx="110" cy="50" r="2.5" fill="var(--hud-color)">
                         <animate attributeName="cx" from="150" to="90" dur="1.2s" repeatCount="indefinite" />
                       </circle>
                     </>
@@ -1552,15 +1924,15 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                 
                 {/* Centered blinker light */}
                 <div className="absolute top-2 right-2 flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${usbDevice ? 'bg-[#00ff41] animate-pulse shadow-[0_0_8px_#00ff41]' : 'bg-amber-600 animate-[pulse_1s_infinite] shadow-[0_0_8px_#d97706]'}`}></span>
+                  <span className={`w-2 h-2 rounded-full ${usbDevice ? 'bg-[var(--hud-color)] animate-pulse shadow-[0_0_8px_var(--hud-color)]' : 'bg-amber-600 animate-[pulse_1s_infinite] shadow-[0_0_8px_#d97706]'}`}></span>
                   <span className="text-[6px] font-mono opacity-50 uppercase">{usbDevice ? "LINKED" : "SCANNING"}</span>
                 </div>
               </div>
 
               {/* Connected Device Details */}
               {usbDevice ? (
-                <div className="w-full text-[8px] bg-black/40 border border-[#00ff41]/20 p-2 rounded-lg space-y-0.5 text-gray-300">
-                  <div className="flex justify-between border-b border-[#00ff41]/10 pb-0.5 mb-1 text-white">
+                <div className="w-full text-[8px] bg-black/40 border border-[var(--hud-color)]/20 p-2 rounded-lg space-y-0.5 text-gray-300">
+                  <div className="flex justify-between border-b border-[var(--hud-color)]/10 pb-0.5 mb-1 text-white">
                     <span className="opacity-50">DEVICE:</span>
                     <span className="font-bold truncate max-w-[120px]">{usbDevice.toUpperCase()}</span>
                   </div>
@@ -1589,14 +1961,14 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
             </div>
 
             {/* HIERARCHICAL DEVICE TREE */}
-            <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col gap-2 font-mono">
-              <p className="text-[8px] font-black uppercase text-white border-b border-[#00ff41]/15 pb-1 mb-1 font-sans">Sovereign Device Tree</p>
+            <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex flex-col gap-2 font-mono">
+              <p className="text-[8px] font-black uppercase text-white border-b border-[var(--hud-color)]/15 pb-1 mb-1 font-sans">Sovereign Device Tree</p>
               <div className="space-y-1 leading-snug text-[8px]">
                 <div className="flex items-center gap-1">
-                  <span className="text-[#00ff41]">[-]</span>
+                  <span className="text-[var(--hud-color)]">[-]</span>
                   <span className="text-white font-bold">NEXUS_ROOT_HUB</span>
                 </div>
-                <div className="pl-4 space-y-1 border-l border-[#00ff41]/15 ml-1.5">
+                <div className="pl-4 space-y-1 border-l border-[var(--hud-color)]/15 ml-1.5">
                   <div className="flex items-center gap-1.5">
                     <span className="opacity-30">├──</span>
                     <span className="text-cyan-400">📷 VIDEO SENSORS</span>
@@ -1613,7 +1985,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   
                   <div className="flex items-center gap-1.5">
                     <span className="opacity-30">├──</span>
-                    <span className={usbDevice ? "text-[#00ff41]" : "text-gray-500"}>🔌 OTG USB BUS [{usbDevice ? "ACTIVE" : "EMPTY"}]</span>
+                    <span className={usbDevice ? "text-[var(--hud-color)]" : "text-gray-500"}>🔌 OTG USB BUS [{usbDevice ? "ACTIVE" : "EMPTY"}]</span>
                   </div>
                   {usbDevice && (
                     <div className="pl-6 text-gray-400">
@@ -1624,7 +1996,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   
                   <div className="flex items-center gap-1.5">
                     <span className="opacity-30">└──</span>
-                    <span className={serialPortRef.current ? "text-[#00ff41]" : "text-gray-500"}>📺 UART SERIAL [{serialPortRef.current ? "OPEN" : "STANDBY"}]</span>
+                    <span className={serialPortRef.current ? "text-[var(--hud-color)]" : "text-gray-500"}>📺 UART SERIAL [{serialPortRef.current ? "OPEN" : "STANDBY"}]</span>
                   </div>
                 </div>
               </div>
@@ -1632,24 +2004,23 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
 
             {/* PERSISTENT USB BRIDGE INITIATION BUTTON */}
             <button 
-              onClick={() => { playBeep(450, 'sine', 0.08); setShowBridgeModal(true); }}
-              className="w-full py-3 border border-[#00ff41] bg-[#00ff41]/5 font-black text-[9px] tracking-widest hover:bg-[#00ff41] hover:text-black transition-all cursor-pointer hover:shadow-[0_0_12px_rgba(0,255,65,0.25)] flex items-center justify-center gap-2 active:scale-[0.98] rounded-xl font-mono"
+              onClick={() => { playHapticClick(); setShowBridgeModal(true); }}
+              className="w-full py-3 border border-[var(--hud-color)] bg-[var(--hud-color)]/5 font-black text-[9px] tracking-widest hover:bg-[var(--hud-color)] hover:text-black transition-all cursor-pointer hover:shadow-[0_0_12px_var(--hud-glow)] flex items-center justify-center gap-2 active:scale-[0.98] rounded-xl font-mono"
             >
               🔌 {usbDevice ? "LINK ACTIVE: MANAGE" : "CONNECT PHYSICAL OTG"}
             </button>
           </aside>
 
           {/* COLUMN 2: CENTER PANEL (Navigation & Active Tab workspace) */}
-          {/* order-1 on mobile (shows workspace at top), order-2 on desktop/landscape */}
           <main className="order-1 lg:order-2 lg:col-span-6 flex flex-col gap-4 lg:overflow-y-auto lg:h-full scrollbar-thin">
             
             {/* MAIN NAVIGATION BAR */}
-            <nav className="grid grid-cols-3 gap-2 bg-[#05070a] p-1 border border-[#00ff41]/15 rounded-lg relative z-20 font-mono">
+            <nav className="grid grid-cols-3 gap-2 bg-[#05070a] p-1 border border-[var(--hud-color)]/15 rounded-lg relative z-20 font-mono">
               {['agents', 'diagnostics', 'telemetry'].map(tab => (
                 <button 
                   key={tab} 
-                  onClick={() => { playBeep(800, 'sine', 0.05); setView(tab); }} 
-                  className={`py-2.5 text-[9px] font-black tracking-widest border transition-all ${view === tab ? 'bg-[#00ff41]/20 border-[#00ff41] text-white shadow-[0_0_10px_rgba(0,255,65,0.2)]' : 'border-transparent text-gray-500 hover:text-gray-300'}`}
+                  onClick={() => { playHapticClick(); setView(tab); }} 
+                  className={`py-2.5 text-[9px] font-black tracking-widest border transition-all cursor-pointer ${view === tab ? 'bg-[var(--hud-color)]/20 border-[var(--hud-color)] text-white shadow-[0_0_10px_var(--hud-glow)]' : 'border-transparent text-gray-500 hover:text-gray-300'}`}
                 >
                   {tab.toUpperCase()}
                 </button>
@@ -1664,26 +2035,26 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   {['Oracle', 'Aegis', 'iFixer', 'Archivist', 'Systems_TuneUp'].map(agent => (
                     <button 
                       key={agent} 
-                      onClick={() => { playBeep(550, 'sine', 0.08); setSelectedAgent(agent); }} 
-                      className={`py-2 px-1 text-[8px] font-bold border transition-all flex flex-col items-center justify-center gap-1 ${selectedAgent === agent ? 'bg-[#00ff41]/10 border-[#00ff41] text-white' : 'border-gray-800 opacity-60 hover:opacity-100'}`}
+                      onClick={() => { playHapticClick(); setSelectedAgent(agent); }} 
+                      className={`py-2 px-1 text-[8px] font-bold border transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${selectedAgent === agent ? 'bg-[var(--hud-color)]/10 border-[var(--hud-color)] text-white' : 'border-gray-800 opacity-60 hover:opacity-100'}`}
                     >
                       <span className="truncate max-w-full">{agent.replace('_', ' ')}</span>
-                      <span className="w-1 h-1 rounded-full bg-[#00ff41] animate-pulse"></span>
+                      <span className="w-1 h-1 rounded-full bg-[var(--hud-color)] animate-pulse"></span>
                     </button>
                   ))}
                 </div>
 
                 {/* Agent Card workspace */}
-                <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col gap-4 font-mono">
+                <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex flex-col gap-4 font-mono">
                   <div>
-                    <div className="flex justify-between items-center border-b border-[#00ff41]/20 pb-1.5 mb-2">
+                    <div className="flex justify-between items-center border-b border-[var(--hud-color)]/20 pb-1.5 mb-2">
                       <p className="text-[10px] font-black text-white uppercase font-sans">AGENT LINKED: {selectedAgent.replace('_', ' ')}</p>
-                      <span className="text-[7px] bg-[#00ff41]/10 border border-[#00ff41]/40 px-2 py-0.5 rounded text-[#00ff41] font-bold">READY</span>
+                      <span className="text-[7px] bg-[var(--hud-color)]/10 border border-[var(--hud-color)]/40 px-2 py-0.5 rounded text-[var(--hud-color)] font-bold">READY</span>
                     </div>
                     <p className="text-[9.5px] leading-relaxed text-gray-300">{agentDescriptions[selectedAgent]}</p>
                     
                     {selectedAgent === 'Archivist' && (
-                      <div className="border border-[#00ff41]/20 bg-black/45 p-3 rounded-lg flex flex-col gap-2 mt-3">
+                      <div className="border border-[var(--hud-color)]/20 bg-black/45 p-3 rounded-lg flex flex-col gap-2 mt-3">
                         <p className="text-[8px] uppercase font-bold text-white font-sans">Forensic Binary Hex Analyzer</p>
                         <div className="flex items-center justify-between gap-3">
                           <input 
@@ -1694,7 +2065,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                           />
                           <label 
                             htmlFor="file-hex-input-lc"
-                            className="py-1 px-2.5 bg-black border border-[#00ff41] hover:bg-[#00ff41] hover:text-black font-black text-[7.5px] tracking-wider transition-all rounded cursor-pointer uppercase"
+                            className="py-1 px-2.5 bg-black border border-[var(--hud-color)] hover:bg-[var(--hud-color)] hover:text-black font-black text-[7.5px] tracking-wider transition-all rounded cursor-pointer uppercase"
                           >
                             LOAD FIRMWARE BIN
                           </label>
@@ -1707,14 +2078,14 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   </div>
 
                   {/* Hex dump view / Agent Logs in Center workspace */}
-                  <div className="bg-black/60 border border-[#00ff41]/10 rounded-lg p-3 h-52 overflow-hidden flex flex-col">
+                  <div className="bg-black/60 border border-[var(--hud-color)]/10 rounded-lg p-3 h-52 overflow-hidden flex flex-col">
                     {selectedAgent === 'Archivist' && hexDumpData ? (
                       <div className="flex-1 flex flex-col overflow-hidden">
-                        <p className="text-[8px] opacity-40 uppercase tracking-widest mb-1.5 border-b border-[#00ff41]/15 pb-1">Hex address dump (Offset 2KB Max)</p>
+                        <p className="text-[8px] opacity-40 uppercase tracking-widest mb-1.5 border-b border-[var(--hud-color)]/15 pb-1">Hex address dump (Offset 2KB Max)</p>
                         <div className="flex-1 overflow-y-auto space-y-0.5 text-[7px] leading-none select-text scrollbar-thin">
                           {hexDumpData.map((line, idx) => (
-                            <div key={idx} className="flex gap-2 hover:bg-[#00ff41]/10 px-1 py-0.2">
-                              <span className="text-[#00ff41] opacity-70">{line.offset}:</span>
+                            <div key={idx} className="flex gap-2 hover:bg-[var(--hud-color)]/10 px-1 py-0.2">
+                              <span className="text-[var(--hud-color)] opacity-70">{line.offset}:</span>
                               <span className="text-white tracking-wide">{line.hex}</span>
                               <span className="text-cyan-400 opacity-80">{line.ascii}</span>
                             </div>
@@ -1723,11 +2094,11 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                       </div>
                     ) : (
                       <div className="flex-1 flex flex-col overflow-hidden">
-                        <p className="text-[8px] opacity-40 uppercase tracking-widest mb-1.5 border-b border-[#00ff41]/10 pb-1">Agent Telemetry Logs</p>
+                        <p className="text-[8px] opacity-40 uppercase tracking-widest mb-1.5 border-b border-[var(--hud-color)]/10 pb-1">Agent Telemetry Logs</p>
                         <div className="flex-1 overflow-y-auto space-y-1 scrollbar-thin">
                           {(agentLogs[selectedAgent] || []).map((log, idx) => (
                             <div key={idx} className="text-[8.5px] flex items-start gap-1">
-                              <span className="text-[#00ff41] opacity-50 select-none">&gt;&gt;</span>
+                              <span className="text-[var(--hud-color)] opacity-50 select-none">&gt;&gt;</span>
                               <span className="text-gray-300">{log}</span>
                             </div>
                           ))}
@@ -1739,19 +2110,19 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   <div className="grid grid-cols-3 gap-2">
                     <button 
                       onClick={() => triggerAgentAction(selectedAgent, "Force telemetry diagnostic")} 
-                      className="py-2 bg-black border border-[#00ff41]/30 rounded text-[7.5px] font-bold hover:bg-[#00ff41]/15 transition-all"
+                      className="py-2 bg-black border border-[var(--hud-color)]/30 rounded text-[7.5px] font-bold hover:bg-[var(--hud-color)]/15 transition-all cursor-pointer"
                     >
                       FORCE SYNC
                     </button>
                     <button 
                       onClick={() => triggerAgentAction(selectedAgent, "Sanitize memory space")} 
-                      className="py-2 bg-black border border-[#00ff41]/30 rounded text-[7.5px] font-bold hover:bg-[#00ff41]/15 transition-all"
+                      className="py-2 bg-black border border-[var(--hud-color)]/30 rounded text-[7.5px] font-bold hover:bg-[var(--hud-color)]/15 transition-all cursor-pointer"
                     >
                       WIPE CACHE
                     </button>
                     <button 
                       onClick={() => triggerAgentAction(selectedAgent, "Execute vulnerability audit")} 
-                      className="py-2 bg-black border border-red-500/40 text-red-400 rounded text-[7.5px] font-bold hover:bg-red-950/20 hover:border-red-500 transition-all"
+                      className="py-2 bg-black border border-red-500/40 text-red-400 rounded text-[7.5px] font-bold hover:bg-red-950/20 hover:border-red-500 transition-all cursor-pointer"
                     >
                       AUDIT AGENT
                     </button>
@@ -1764,19 +2135,25 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
               <div className="space-y-4 animate-in fade-in duration-200">
                 
                 {/* TOOL ACTION WIDGET */}
-                <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col gap-3 font-mono">
-                  <div className="flex border-b border-[#00ff41]/25 pb-1.5 gap-4">
+                <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex flex-col gap-3 font-mono">
+                  <div className="flex border-b border-[var(--hud-color)]/25 pb-1.5 gap-4">
                     <button 
-                      onClick={() => { playBeep(700, 'sine', 0.05); setToolTab('mobile'); }} 
-                      className={`text-[9px] font-bold pb-1 transition-all ${toolTab === 'mobile' ? 'border-b-2 border-[#00ff41] text-white' : 'opacity-40 hover:opacity-80'}`}
+                      onClick={() => { playHapticClick(); setToolTab('mobile'); }} 
+                      className={`text-[9px] font-bold pb-1 transition-all cursor-pointer ${toolTab === 'mobile' ? 'border-b-2 border-[var(--hud-color)] text-white' : 'opacity-40 hover:opacity-80'}`}
                     >
                       MOBILE OVERRIDE
                     </button>
                     <button 
-                      onClick={() => { playBeep(700, 'sine', 0.05); setToolTab('pc'); }} 
-                      className={`text-[9px] font-bold pb-1 transition-all ${toolTab === 'pc' ? 'border-b-2 border-[#00ff41] text-white' : 'opacity-40 hover:opacity-80'}`}
+                      onClick={() => { playHapticClick(); setToolTab('pc'); }} 
+                      className={`text-[9px] font-bold pb-1 transition-all cursor-pointer ${toolTab === 'pc' ? 'border-b-2 border-[var(--hud-color)] text-white' : 'opacity-40 hover:opacity-80'}`}
                     >
                       PC FIRMWARE AUDIT
+                    </button>
+                    <button 
+                      onClick={() => { playHapticClick(); setToolTab('serial'); }} 
+                      className={`text-[9px] font-bold pb-1 transition-all cursor-pointer ${toolTab === 'serial' ? 'border-b-2 border-[var(--hud-color)] text-white' : 'opacity-40 hover:opacity-80'}`}
+                    >
+                      📟 UART CONSOLE
                     </button>
                   </div>
 
@@ -1784,16 +2161,16 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                     <div className="grid grid-cols-2 gap-2">
                       <button 
                         onClick={() => runSystemAction("Nexus Phoenix Standard Repair Bypass", "mobile")} 
-                        className="p-2.5 bg-black border border-[#00ff41]/25 hover:bg-[#00ff41]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all"
+                        className="p-2.5 bg-black border border-[var(--hud-color)]/25 hover:bg-[var(--hud-color)]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all cursor-pointer"
                       >
-                        <span className="text-[#00ff41] font-sans">🩹 Phoenix Loop Bypass</span>
+                        <span className="text-[var(--hud-color)] font-sans">🩹 Phoenix Loop Bypass</span>
                         <span className="text-[7px] opacity-60">Force bypass system firmware boot overrides.</span>
                       </button>
                       <button 
                         onClick={() => runSystemAction("Nexus Phoenix Firmware Force Recovery", "mobile")} 
-                        className="p-2.5 bg-black border border-[#00ff41]/25 hover:bg-[#00ff41]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all"
+                        className="p-2.5 bg-black border border-[var(--hud-color)]/25 hover:bg-[var(--hud-color)]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all cursor-pointer"
                       >
-                        <span className="text-[#00ff41] font-sans">⚡ Phoenix Block Flash</span>
+                        <span className="text-[var(--hud-color)] font-sans">⚡ Phoenix Block Flash</span>
                         <span className="text-[7px] opacity-60">Direct partition writes to secure firmware sectors.</span>
                       </button>
                     </div>
@@ -1803,18 +2180,74 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                     <div className="grid grid-cols-2 gap-2">
                       <button 
                         onClick={() => runSystemAction("Nexus Aegis Core Optimizer Speed Sweep", "pc")} 
-                        className="p-2.5 bg-black border border-[#00ff41]/25 hover:bg-[#00ff41]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all"
+                        className="p-2.5 bg-black border border-[var(--hud-color)]/25 hover:bg-[var(--hud-color)]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all cursor-pointer"
                       >
-                        <span className="text-[#00ff41] font-sans">🧹 Aegis cache sanitation</span>
+                        <span className="text-[var(--hud-color)] font-sans">🧹 Aegis cache sanitation</span>
                         <span className="text-[7px] opacity-60">Cleans buffer heaps and sanitizes volatile data.</span>
                       </button>
                       <button 
                         onClick={() => runSystemAction("Nexus Aegis System Configuration Repair", "pc")} 
-                        className="p-2.5 bg-black border border-[#00ff41]/25 hover:bg-[#00ff41]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all"
+                        className="p-2.5 bg-black border border-[var(--hud-color)]/25 hover:bg-[var(--hud-color)]/10 rounded-lg text-left text-[9px] font-bold text-white flex flex-col gap-0.5 transition-all cursor-pointer"
                       >
-                        <span className="text-[#00ff41] font-sans">🛠️ Integrity Check Audit</span>
+                        <span className="text-[var(--hud-color)] font-sans">🛠️ Integrity Check Audit</span>
                         <span className="text-[7px] opacity-60">Compares sector hashes against diagnostic keys.</span>
                       </button>
+                    </div>
+                  )}
+
+                  {/* BIDIRECTIONAL UART CONSOLE */}
+                  {toolTab === 'serial' && (
+                    <div className="space-y-3">
+                      {/* UART terminal stream logs */}
+                      <div className="bg-black/80 border border-[var(--hud-color)]/30 rounded-lg p-3 h-40 overflow-y-auto space-y-1 font-mono text-[8px] scrollbar-thin">
+                        <div className="text-[var(--hud-color)]/50 border-b border-[var(--hud-color)]/10 pb-1 mb-1 font-sans flex justify-between uppercase">
+                          <span>UART Serial Monitor</span>
+                          <span>{usbDevice ? "BRIDGE ACTIVE" : "SIMULATED MONITOR"}</span>
+                        </div>
+                        {liveData.filter(item => item.node === 'UART_BRIDGE' || item.node === 'NEXUS_TX').length === 0 ? (
+                          <div className="text-center italic opacity-35 py-4">No serial communication data active.</div>
+                        ) : (
+                          liveData.filter(item => item.node === 'UART_BRIDGE' || item.node === 'NEXUS_TX').map((item, idx) => {
+                            const isTx = item.node === 'NEXUS_TX';
+                            return (
+                              <div key={idx} className="flex items-start gap-1 select-text">
+                                <span className={isTx ? "text-cyan-400 font-bold" : "text-[var(--hud-color)]"}>
+                                  {isTx ? "TX >>" : "RX <<"}
+                                </span>
+                                <span className={isTx ? "text-cyan-300" : "text-gray-300"}>{item.device}</span>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Command Sender form */}
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={serialTxInput}
+                          onChange={(e) => setSerialTxInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); sendSerialData(); } }}
+                          placeholder="Type UART payload command..."
+                          className="flex-1 bg-black border border-[var(--hud-color)]/30 p-2 text-[8px] text-[var(--hud-color)] focus:outline-none focus:border-[var(--hud-color)]/80 rounded font-mono"
+                        />
+                        <select
+                          value={serialTxTerminator}
+                          onChange={(e) => setSerialTxTerminator(e.target.value)}
+                          className="bg-black border border-[var(--hud-color)]/35 p-1 text-[var(--hud-color)] rounded font-mono text-[7.5px] focus:outline-none"
+                        >
+                          <option value="\r\n">CRLF (\r\n)</option>
+                          <option value="\n">LF (\n)</option>
+                          <option value="\r">CR (\r)</option>
+                          <option value="none">NONE</option>
+                        </select>
+                        <button
+                          onClick={sendSerialData}
+                          className="px-4 py-2 bg-[var(--hud-color)] text-black font-black text-[8px] tracking-wider hover:bg-white transition-all rounded uppercase cursor-pointer"
+                        >
+                          TX SEND
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -1829,13 +2262,13 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                 </div>
 
                 {/* DIAGNOSTIC LENS CAMERA FRAME WORKSPACE */}
-                <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col gap-3 font-mono">
-                  <p className="text-[9px] font-black text-white border-b border-[#00ff41]/10 pb-1 uppercase tracking-wider font-sans">Camera Diagnostic Lens Suite</p>
+                <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex flex-col gap-3 font-mono">
+                  <p className="text-[9px] font-black text-white border-b border-[var(--hud-color)]/10 pb-1 uppercase tracking-wider font-sans">Camera Diagnostic Lens Suite</p>
                   
                   {oracleState === "AWAITING_INPUT" && (
                     <button 
                       onClick={startCamera} 
-                      className="flex-1 flex flex-col justify-center items-center py-10 border border-[#00ff41] border-dashed bg-[#00ff41]/5 text-[#00ff41] hover:bg-[#00ff41]/10 transition-all rounded-lg"
+                      className="flex-1 flex flex-col justify-center items-center py-10 border border-[var(--hud-color)] border-dashed bg-[var(--hud-color)]/5 text-[var(--hud-color)] hover:bg-[var(--hud-color)]/10 transition-all rounded-lg cursor-pointer"
                     >
                       <span className="text-2xl mb-1.5">📷</span>
                       <span className="text-[8.5px] font-black tracking-widest font-sans">ACTIVATE HARDWARE DIAGNOSTIC LENS</span>
@@ -1845,7 +2278,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   {oracleState === "LENS_ACTIVE" && (
                     <div className="space-y-3">
                       {/* Video Preview Container */}
-                      <div className="relative h-56 bg-black rounded-lg overflow-hidden border border-[#00ff41]/30 flex flex-col justify-between">
+                      <div className="relative h-56 bg-black rounded-lg overflow-hidden border border-[var(--hud-color)]/30 flex flex-col justify-between">
                         
                         {/* Live Webcam Stream or frozen image display */}
                         {isCameraFrozen && capturedImage ? (
@@ -1867,30 +2300,30 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                         {/* Target Reticle overlay */}
                         {cameraOverlay === 'reticle' && (
                           <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
-                            <svg className="w-28 h-28 stroke-[#00ff41] stroke-2 fill-none opacity-80" viewBox="0 0 100 100">
+                            <svg className="w-28 h-28 stroke-[var(--hud-color)] stroke-2 fill-none opacity-80" viewBox="0 0 100 100">
                               <circle cx="50" cy="50" r="40" strokeDasharray="4,4" className="animate-spin [animation-duration:15s]" />
                               <circle cx="50" cy="50" r="20" />
                               <line x1="50" y1="0" x2="50" y2="15" />
                               <line x1="50" y1="85" x2="50" y2="100" />
                               <line x1="0" y1="50" x2="15" y2="50" />
                               <line x1="85" y1="50" x2="100" y2="50" />
-                              <circle cx="50" cy="50" r="1.5" fill="#00ff41" />
+                              <circle cx="50" cy="50" r="1.5" fill="var(--hud-color)" />
                             </svg>
-                            <span className="absolute text-[6px] tracking-widest text-[#00ff41] font-mono bottom-10 animate-pulse">LOCKING COORD SYSTEM</span>
+                            <span className="absolute text-[6px] tracking-widest text-[var(--hud-color)] font-mono bottom-10 animate-pulse">LOCKING COORD SYSTEM</span>
                           </div>
                         )}
 
                         {/* Grid lines overlay */}
                         {cameraOverlay === 'grid' && (
-                          <div className="absolute inset-0 z-10 pointer-events-none grid grid-cols-3 grid-rows-3 border border-[#00ff41]/15">
-                            <div className="border-r border-b border-[#00ff41]/20"></div>
-                            <div className="border-r border-b border-[#00ff41]/20"></div>
-                            <div className="border-b border-[#00ff41]/20"></div>
-                            <div className="border-r border-b border-[#00ff41]/20"></div>
-                            <div className="border-r border-b border-[#00ff41]/20"></div>
-                            <div className="border-b border-[#00ff41]/20"></div>
-                            <div className="border-r border-[#00ff41]/20"></div>
-                            <div className="border-r border-[#00ff41]/20"></div>
+                          <div className="absolute inset-0 z-10 pointer-events-none grid grid-cols-3 grid-rows-3 border border-[var(--hud-color)]/15">
+                            <div className="border-r border-b border-[var(--hud-color)]/20"></div>
+                            <div className="border-r border-b border-[var(--hud-color)]/20"></div>
+                            <div className="border-b border-[var(--hud-color)]/20"></div>
+                            <div className="border-r border-b border-[var(--hud-color)]/20"></div>
+                            <div className="border-r border-b border-[var(--hud-color)]/20"></div>
+                            <div className="border-b border-[var(--hud-color)]/20"></div>
+                            <div className="border-r border-[var(--hud-color)]/20"></div>
+                            <div className="border-r border-[var(--hud-color)]/20"></div>
                             <div></div>
                           </div>
                         )}
@@ -1910,15 +2343,15 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
 
                         {/* Top details bar */}
                         <div className="absolute top-2 left-2 right-2 flex justify-between items-center z-20">
-                          <span className="text-[6.5px] bg-black/80 border border-[#00ff41]/40 px-2 py-0.5 text-white font-mono rounded font-bold uppercase tracking-wider flex items-center gap-1.5">
-                            <span className="w-1 h-1 bg-[#00ff41] rounded-full animate-ping"></span>
+                          <span className="text-[6.5px] bg-black/80 border border-[var(--hud-color)]/40 px-2 py-0.5 text-white font-mono rounded font-bold uppercase tracking-wider flex items-center gap-1.5">
+                            <span className="w-1 h-1 bg-[var(--hud-color)] rounded-full animate-ping"></span>
                             {isCameraFrozen ? "FROZEN MATRIX" : `LIVE LENS ${cameraResolution}`}
                           </span>
                           
                           {hasTorch && !isCameraFrozen && (
                             <button 
                               onClick={toggleTorch}
-                              className={`px-2 py-0.5 font-bold text-[6.5px] border transition-all rounded font-mono ${torchActive ? 'bg-[#00ff41] text-black border-[#00ff41]' : 'bg-black/90 text-white border-white/20'}`}
+                              className={`px-2 py-0.5 font-bold text-[6.5px] border transition-all rounded font-mono cursor-pointer ${torchActive ? 'bg-[var(--hud-color)] text-black border-[var(--hud-color)]' : 'bg-black/90 text-white border-white/20'}`}
                             >
                               {torchActive ? "⚡ TORCH ON" : "⚡ TORCH OFF"}
                             </button>
@@ -1926,12 +2359,12 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                         </div>
 
                         {/* Floating bottom filter options row */}
-                        <div className="absolute bottom-2 left-2 right-2 z-20 flex justify-center gap-1 bg-black/85 border border-[#00ff41]/15 p-1 rounded-lg text-[6px]">
+                        <div className="absolute bottom-2 left-2 right-2 z-20 flex justify-center gap-1 bg-black/85 border border-[var(--hud-color)]/15 p-1 rounded-lg text-[6px]">
                           {['none', 'grayscale', 'contrast', 'night-vision', 'thermal'].map(filter => (
                             <button
                               key={filter}
-                              onClick={() => { playBeep(650, 'sine', 0.04); setCameraFilter(filter); }}
-                              className={`px-1.5 py-0.5 font-bold transition-all rounded border ${cameraFilter === filter ? 'bg-[#00ff41] text-black border-[#00ff41]' : 'border-transparent text-gray-400 hover:text-white'}`}
+                              onClick={() => { playHapticClick(); setCameraFilter(filter); }}
+                              className={`px-1.5 py-0.5 font-bold transition-all rounded border cursor-pointer ${cameraFilter === filter ? 'bg-[var(--hud-color)] text-black border-[var(--hud-color)]' : 'border-transparent text-gray-400 hover:text-white'}`}
                             >
                               {filter.toUpperCase().replace('-', ' ')}
                             </button>
@@ -1940,16 +2373,16 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                       </div>
 
                       {/* CAMERA CONTROLS AND DIALS DRAWER */}
-                      <div className="border border-[#00ff41]/20 p-3 bg-black/60 rounded-lg text-[8px] space-y-2.5">
+                      <div className="border border-[var(--hud-color)]/20 p-3 bg-black/60 rounded-lg text-[8px] space-y-2.5">
                         
                         {/* Device & Resolution Selectors row */}
                         <div className="grid grid-cols-2 gap-3">
                           <div className="flex flex-col gap-1">
-                            <label className="text-[#00ff41]/60 font-bold uppercase">Source Camera</label>
+                            <label className="text-[var(--hud-color)]/60 font-bold uppercase">Source Camera</label>
                             <select
                               value={selectedCameraId}
                               onChange={(e) => { setSelectedCameraId(e.target.value); setTimeout(startCamera, 100); }}
-                              className="bg-black border border-[#00ff41]/35 p-1 text-[#00ff41] rounded font-mono text-[7.5px] focus:outline-none"
+                              className="bg-black border border-[var(--hud-color)]/35 p-1 text-[var(--hud-color)] rounded font-mono text-[7.5px] focus:outline-none"
                             >
                               {videoDevices.map((d, i) => (
                                 <option key={d.deviceId || i} value={d.deviceId}>
@@ -1960,11 +2393,11 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                             </select>
                           </div>
                           <div className="flex flex-col gap-1">
-                            <label className="text-[#00ff41]/60 font-bold uppercase">Format Limit</label>
+                            <label className="text-[var(--hud-color)]/60 font-bold uppercase">Format Limit</label>
                             <select
                               value={cameraResolution}
                               onChange={(e) => { setCameraResolution(e.target.value); setTimeout(startCamera, 100); }}
-                              className="bg-black border border-[#00ff41]/35 p-1 text-[#00ff41] rounded font-mono text-[7.5px] focus:outline-none"
+                              className="bg-black border border-[var(--hud-color)]/35 p-1 text-[var(--hud-color)] rounded font-mono text-[7.5px] focus:outline-none"
                             >
                               <option value="480p">SD (640x480)</option>
                               <option value="720p">HD (1280x720)</option>
@@ -1974,45 +2407,78 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                           </div>
                         </div>
 
+                        {/* Multimodal Presets selector row */}
+                        <div className="flex flex-col gap-1 border-t border-[var(--hud-color)]/10 pt-2">
+                          <label className="text-[var(--hud-color)]/60 font-bold uppercase">Oracle AI Analysis Mode</label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <select
+                              value={oraclePromptPreset}
+                              onChange={(e) => { playHapticClick(); setOraclePromptPreset(e.target.value); }}
+                              className="bg-black border border-[var(--hud-color)]/35 p-1.5 text-[var(--hud-color)] rounded font-mono text-[7.5px] focus:outline-none"
+                            >
+                              <option value="defect">🔍 BOARD DEFECT ANALYSIS</option>
+                              <option value="ocr">🏷️ PART / OCR IDENTIFICATION</option>
+                              <option value="solder">⚡ SOLDER QUALITY AUDIT</option>
+                              <option value="custom">✏️ CUSTOM FORENSIC QUERY</option>
+                            </select>
+                            
+                            {oraclePromptPreset === 'custom' ? (
+                              <input
+                                type="text"
+                                value={oracleCustomPrompt}
+                                onChange={(e) => setOracleCustomPrompt(e.target.value)}
+                                placeholder="Enter custom inspection prompt..."
+                                className="bg-black border border-[var(--hud-color)]/35 p-1 px-2 text-[var(--hud-color)] rounded font-mono text-[7.5px] focus:outline-none"
+                              />
+                            ) : (
+                              <div className="text-[6.5px] opacity-50 flex items-center leading-normal">
+                                {oraclePromptPreset === 'defect' && "* Audit board tracks, bulges, capacitors, and burns."}
+                                {oraclePromptPreset === 'ocr' && "* OCR-extract chip numbers, revisions, and labels."}
+                                {oraclePromptPreset === 'solder' && "* Verify solder joint wetting, cracks, and bridges."}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
                         {/* Zoom Slider */}
-                        <div className="flex justify-between items-center border-t border-[#00ff41]/10 pt-2">
+                        <div className="flex justify-between items-center border-t border-[var(--hud-color)]/10 pt-2">
                           <span className="text-white">Forensic Zoom: {cameraZoom.toFixed(1)}x</span>
                           <div className="flex items-center gap-2">
                             <input 
                               type="range" min="1" max="4" step="0.1" value={cameraZoom}
                               onChange={(e) => updateNativeZoom(parseFloat(e.target.value))}
                               disabled={isCameraFrozen}
-                              className="accent-[#00ff41] h-1 w-28"
+                              className="accent-[var(--hud-color)] h-1 w-28"
                             />
                             <span className="opacity-45 text-[7px]">{hasNativeZoom ? "NATIVE" : "CSS SCALE"}</span>
                           </div>
                         </div>
 
                         {/* Brightness, Contrast, Saturation Adjustments sliders */}
-                        <div className="grid grid-cols-3 gap-2 border-t border-[#00ff41]/10 pt-2">
+                        <div className="grid grid-cols-3 gap-2 border-t border-[var(--hud-color)]/10 pt-2">
                           <div className="flex flex-col gap-0.5">
                             <div className="flex justify-between opacity-50"><span>Bright</span><span>{cameraBrightness}%</span></div>
-                            <input type="range" min="50" max="200" step="5" value={cameraBrightness} onChange={(e) => setCameraBrightness(parseInt(e.target.value))} className="accent-[#00ff41] h-1" />
+                            <input type="range" min="50" max="200" step="5" value={cameraBrightness} onChange={(e) => setCameraBrightness(parseInt(e.target.value))} className="accent-[var(--hud-color)] h-1" />
                           </div>
                           <div className="flex flex-col gap-0.5">
                             <div className="flex justify-between opacity-50"><span>Contr</span><span>{cameraContrast}%</span></div>
-                            <input type="range" min="50" max="200" step="5" value={cameraContrast} onChange={(e) => setCameraContrast(parseInt(e.target.value))} className="accent-[#00ff41] h-1" />
+                            <input type="range" min="50" max="200" step="5" value={cameraContrast} onChange={(e) => setCameraContrast(parseInt(e.target.value))} className="accent-[var(--hud-color)] h-1" />
                           </div>
                           <div className="flex flex-col gap-0.5">
                             <div className="flex justify-between opacity-50"><span>Satur</span><span>{cameraSaturation}%</span></div>
-                            <input type="range" min="50" max="200" step="5" value={cameraSaturation} onChange={(e) => setCameraSaturation(parseInt(e.target.value))} className="accent-[#00ff41] h-1" />
+                            <input type="range" min="50" max="200" step="5" value={cameraSaturation} onChange={(e) => setCameraSaturation(parseInt(e.target.value))} className="accent-[var(--hud-color)] h-1" />
                           </div>
                         </div>
 
                         {/* Target Overlay selectors */}
-                        <div className="flex items-center justify-between border-t border-[#00ff41]/10 pt-2">
+                        <div className="flex items-center justify-between border-t border-[var(--hud-color)]/10 pt-2">
                           <span className="text-white">Overlay grid</span>
                           <div className="flex gap-1 text-[7px]">
                             {['none', 'reticle', 'grid', 'roi'].map(ov => (
                               <button
                                 key={ov}
-                                onClick={() => { playBeep(600, 'sine', 0.04); setCameraOverlay(ov); }}
-                                className={`px-2 py-0.5 rounded border ${cameraOverlay === ov ? 'bg-[#00ff41] text-black border-[#00ff41]' : 'border-[#00ff41]/20 text-white'}`}
+                                onClick={() => { playHapticClick(); setCameraOverlay(ov); }}
+                                className={`px-2 py-0.5 rounded border cursor-pointer ${cameraOverlay === ov ? 'bg-[var(--hud-color)] text-black border-[var(--hud-color)]' : 'border-[var(--hud-color)]/20 text-white'}`}
                               >
                                 {ov.toUpperCase()}
                               </button>
@@ -2027,13 +2493,13 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                           <>
                             <button 
                               onClick={analyzeCapturedFrame}
-                              className="flex-1 py-2.5 bg-[#00ff41] text-black font-black text-[9px] tracking-widest hover:bg-white transition-all rounded shadow-md font-sans"
+                              className="flex-1 py-2.5 bg-[var(--hud-color)] text-black font-black text-[9px] tracking-widest hover:bg-white transition-all rounded shadow-md font-sans cursor-pointer"
                             >
                               🔍 AI INSPECT FRAME
                             </button>
                             <button 
                               onClick={unfreezeCamera}
-                              className="px-4 py-2.5 bg-black border border-[#00ff41] text-[#00ff41] font-bold text-[9px] tracking-wider hover:bg-[#00ff41]/10 transition-all rounded"
+                              className="px-4 py-2.5 bg-black border border-[var(--hud-color)] text-[var(--hud-color)] font-bold text-[9px] tracking-wider hover:bg-[var(--hud-color)]/10 transition-all rounded cursor-pointer"
                             >
                               🔄 RESUME LIVE
                             </button>
@@ -2041,14 +2507,14 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                         ) : (
                           <button 
                             onClick={freezeCamera} 
-                            className="flex-1 py-2.5 bg-[#00ff41] text-black font-black text-[9px] tracking-widest hover:bg-white transition-all rounded shadow-md font-sans"
+                            className="flex-1 py-2.5 bg-[var(--hud-color)] text-black font-black text-[9px] tracking-widest hover:bg-white transition-all rounded shadow-md font-sans cursor-pointer"
                           >
                             ❄️ FREEZE DIAGNOSTIC FRAME
                           </button>
                         )}
                         <button 
                           onClick={resetCamera} 
-                          className="px-3 py-2.5 bg-black border border-red-500/50 text-red-500 font-bold text-[9px] tracking-wider hover:bg-red-950/20 transition-all rounded"
+                          className="px-3 py-2.5 bg-black border border-red-500/50 text-red-500 font-bold text-[9px] tracking-wider hover:bg-red-950/20 transition-all rounded cursor-pointer"
                         >
                           STANDBY
                         </button>
@@ -2057,9 +2523,9 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   )}
 
                   {oracleState === "DIAGNOSTIC_RUNNING" && (
-                    <div className="h-60 bg-black/60 rounded-lg border border-[#00ff41]/35 flex flex-col justify-center items-center gap-3">
+                    <div className="h-60 bg-black/60 rounded-lg border border-[var(--hud-color)]/35 flex flex-col justify-center items-center gap-3">
                       <span className="text-2xl animate-spin">🌀</span>
-                      <p className="text-[8.5px] text-[#00ff41] tracking-widest animate-pulse font-sans font-black uppercase text-center max-w-[280px]">
+                      <p className="text-[8.5px] text-[var(--hud-color)] tracking-widest animate-pulse font-sans font-black uppercase text-center max-w-[280px]">
                         TRANSMITTING SPECTRAL CAPTURE TO ORACLE AGENT MODEL...
                       </p>
                     </div>
@@ -2068,24 +2534,24 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   {oracleState === "DIAGNOSIS_COMPLETE" && (
                     <div className="space-y-3">
                       <div className="grid grid-cols-3 gap-2">
-                        <div className="col-span-1 border border-[#00ff41]/25 bg-black rounded-lg overflow-hidden h-36 relative">
+                        <div className="col-span-1 border border-[var(--hud-color)]/25 bg-black rounded-lg overflow-hidden h-36 relative">
                           {capturedImage && <img src={capturedImage} style={getCameraVideoStyle()} className="w-full h-full object-cover" />}
-                          <div className="absolute top-1 left-1 text-[5.5px] bg-[#00ff41] text-black px-1 font-bold">FROZEN</div>
+                          <div className="absolute top-1 left-1 text-[5.5px] bg-[var(--hud-color)] text-black px-1 font-bold">FROZEN</div>
                         </div>
-                        <div className="col-span-2 text-[8px] p-2.5 bg-[#00ff41]/5 rounded-lg border border-[#00ff41]/20 h-36 overflow-y-auto whitespace-pre-line leading-relaxed scrollbar-thin">
+                        <div className="col-span-2 text-[8px] p-2.5 bg-[var(--hud-color)]/5 rounded-lg border border-[var(--hud-color)]/20 h-36 overflow-y-auto whitespace-pre-line leading-relaxed scrollbar-thin select-text">
                           {diagnosticResult}
                         </div>
                       </div>
                       <div className="flex gap-2">
                         <button 
                           onClick={exportDiagnosticsReport}
-                          className="flex-1 py-2 bg-black border border-[#00ff41] text-[#00ff41] hover:bg-[#00ff41] hover:text-black text-[9px] font-black tracking-widest transition-all rounded font-mono"
+                          className="flex-1 py-2 bg-black border border-[var(--hud-color)] text-[var(--hud-color)] hover:bg-[var(--hud-color)] hover:text-black text-[9px] font-black tracking-widest transition-all rounded font-mono cursor-pointer"
                         >
                           📥 EXPORT FORENSIC REPORT
                         </button>
                         <button 
                           onClick={resetCamera} 
-                          className="px-5 py-2 bg-black border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black text-[9px] font-black tracking-widest transition-all rounded font-mono"
+                          className="px-5 py-2 bg-black border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black text-[9px] font-black tracking-widest transition-all rounded font-mono cursor-pointer"
                         >
                           RESET
                         </button>
@@ -2102,22 +2568,22 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                 <div className="grid grid-cols-1 gap-4">
                   
                   {/* Telemetry SVG Oscilloscope with controls */}
-                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col justify-between font-mono">
+                  <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex flex-col justify-between font-mono">
                     <div>
-                      <h3 className="text-[10px] font-black tracking-widest text-[#00ff41]/80 uppercase border-b border-[#00ff41]/10 pb-1.5 mb-3 font-sans">
+                      <h3 className="text-[10px] font-black tracking-widest text-[var(--hud-color)]/80 uppercase border-b border-[var(--hud-color)]/10 pb-1.5 mb-3 font-sans">
                         Signal Waveform Oscilloscope
                       </h3>
                       
-                      <div className="h-44 border border-[#00ff41]/20 bg-black relative flex items-center rounded-lg overflow-hidden">
-                        <div className="absolute inset-0 bg-gradient-to-b from-[#00ff41]/5 to-transparent pointer-events-none"></div>
-                        <div className="absolute left-4 top-2 text-[7px] text-[#00ff41]/40 font-bold uppercase tracking-wider">CH1 - 4.2V</div>
-                        <div className="absolute right-4 bottom-2 text-[7px] text-[#00ff41]/40 font-bold uppercase tracking-wider">SWEEP: {oscFrozen ? "FROZEN" : "AUTO"}</div>
+                      <div className="h-44 border border-[var(--hud-color)]/20 bg-black relative flex items-center rounded-lg overflow-hidden">
+                        <div className="absolute inset-0 bg-gradient-to-b from-[var(--hud-color)]/5 to-transparent pointer-events-none"></div>
+                        <div className="absolute left-4 top-2 text-[7px] text-[var(--hud-color)]/40 font-bold uppercase tracking-wider">CH1 - 4.2V</div>
+                        <div className="absolute right-4 bottom-2 text-[7px] text-[var(--hud-color)]/40 font-bold uppercase tracking-wider">SWEEP: {oscFrozen ? "FROZEN" : "AUTO"}</div>
                         
                         <svg viewBox="0 0 300 100" className="w-full h-full" preserveAspectRatio="none">
-                          <line x1="0" y1="50" x2="300" y2="50" stroke="rgba(0,255,65,0.15)" strokeWidth="0.5" strokeDasharray="3,3" />
-                          <line x1="75" y1="0" x2="75" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
-                          <line x1="150" y1="0" x2="150" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
-                          <line x1="225" y1="0" x2="225" y2="100" stroke="rgba(0,255,65,0.08)" strokeWidth="0.5" strokeDasharray="3,3" />
+                          <line x1="0" y1="50" x2="300" y2="50" stroke="var(--hud-color)" opacity="0.15" strokeWidth="0.5" strokeDasharray="3,3" />
+                          <line x1="75" y1="0" x2="75" y2="100" stroke="var(--hud-color)" opacity="0.08" strokeWidth="0.5" strokeDasharray="3,3" />
+                          <line x1="150" y1="0" x2="150" y2="100" stroke="var(--hud-color)" opacity="0.08" strokeWidth="0.5" strokeDasharray="3,3" />
+                          <line x1="225" y1="0" x2="225" y2="100" stroke="var(--hud-color)" opacity="0.08" strokeWidth="0.5" strokeDasharray="3,3" />
                           
                           <path
                             d={Array.from({ length: 300 })
@@ -2127,21 +2593,21 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                               })
                               .join(' ')}
                             fill="none"
-                            stroke="#00ff41"
+                            stroke="var(--hud-color)"
                             strokeWidth="1.5"
-                            className="drop-shadow-[0_0_3px_rgba(0,255,65,0.7)]"
+                            className="drop-shadow-[0_0_4px_var(--hud-color)]"
                           />
                         </svg>
                       </div>
 
                       {/* Oscilloscope parameters control panel */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-3 border border-[#00ff41]/15 p-2 bg-black/45 rounded-lg text-[8px] uppercase">
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 mt-3 border border-[var(--hud-color)]/15 p-2 bg-black/45 rounded-lg text-[8px] uppercase">
                         <div className="flex flex-col gap-1">
                           <label className="opacity-55">Waveform</label>
                           <select 
                             value={oscWaveform}
                             onChange={(e) => setOscWaveform(e.target.value)}
-                            className="bg-black border border-[#00ff41]/30 p-1 text-[#00ff41] focus:outline-none rounded font-mono text-[7px]"
+                            className="bg-black border border-[var(--hud-color)]/30 p-1 text-[var(--hud-color)] focus:outline-none rounded font-mono text-[7px]"
                           >
                             <option value="sine">SINE WAVE</option>
                             <option value="square">SQUARE WAVE</option>
@@ -2155,7 +2621,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                           <input 
                             type="range" min="5" max="80" step="5" value={oscFrequency}
                             onChange={(e) => setOscFrequency(parseInt(e.target.value))}
-                            className="accent-[#00ff41] h-1"
+                            className="accent-[var(--hud-color)] h-1"
                           />
                         </div>
                         <div className="flex flex-col gap-0.5">
@@ -2163,12 +2629,21 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                           <input 
                             type="range" min="5" max="45" step="2" value={oscAmplitude}
                             onChange={(e) => setOscAmplitude(parseInt(e.target.value))}
-                            className="accent-[#00ff41] h-1"
+                            className="accent-[var(--hud-color)] h-1"
                           />
                         </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="opacity-55">Audio Monitor</label>
+                          <button 
+                            onClick={() => { playHapticClick(); setAudioGenActive(!audioGenActive); }}
+                            className={`w-full py-1 font-bold tracking-widest border transition-all rounded text-[7px] cursor-pointer ${audioGenActive ? 'bg-[var(--hud-color)] text-black border-[var(--hud-color)] animate-pulse' : 'border-[var(--hud-color)]/30 text-white hover:bg-[var(--hud-color)]/10'}`}
+                          >
+                            {audioGenActive ? "🔊 ACTIVE" : "🔇 STANDBY"}
+                          </button>
+                        </div>
                         <button 
-                          onClick={() => { playBeep(750, 'sine', 0.05); setOscFrozen(!oscFrozen); }}
-                          className={`w-full py-1.5 font-bold tracking-widest border transition-all ${oscFrozen ? 'bg-[#00ff41] text-black border-[#00ff41]' : 'border-[#00ff41]/30 text-white'}`}
+                          onClick={() => { playHapticClick(); setOscFrozen(!oscFrozen); }}
+                          className={`w-full h-fit py-1.5 self-end font-bold tracking-widest border transition-all rounded text-[7px] cursor-pointer ${oscFrozen ? 'bg-[var(--hud-color)] text-black border-[var(--hud-color)]' : 'border-[var(--hud-color)]/30 text-white hover:bg-[var(--hud-color)]/10'}`}
                         >
                           {oscFrozen ? "UNFREEZE" : "FREEZE"}
                         </button>
@@ -2176,27 +2651,27 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 mt-3 text-[9px]">
-                      <div className="border border-[#00ff41]/10 p-2 bg-[#00ff41]/5 text-center">
+                      <div className="border border-[var(--hud-color)]/10 p-2 bg-[var(--hud-color)]/5 text-center">
                         <p className="opacity-50 uppercase text-[7px]">Packet Rate</p>
                         <p className="text-xs font-black text-white mt-0.5">{packetsPerSec} PPS</p>
                       </div>
-                      <div className="border border-[#00ff41]/10 p-2 bg-[#00ff41]/5 text-center">
+                      <div className="border border-[var(--hud-color)]/10 p-2 bg-[var(--hud-color)]/5 text-center">
                         <p className="opacity-50 uppercase text-[7px]">Integrity Rating</p>
-                        <p className="text-xs font-black text-[#00ff41] mt-0.5">{healthStatus}%</p>
+                        <p className="text-xs font-black text-[var(--hud-color)] mt-0.5">{healthStatus}%</p>
                       </div>
                     </div>
                   </div>
 
                   {/* Telemetry Audio Sequencer Panel */}
-                  <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex flex-col gap-4 font-mono">
+                  <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex flex-col gap-4 font-mono">
                     
                     {/* Melodical Sequencer Grid */}
-                    <div className="border border-[#00ff41]/20 p-3 bg-black/60 rounded-lg space-y-2">
-                      <div className="flex justify-between items-center border-b border-[#00ff41]/15 pb-1 mb-2">
+                    <div className="border border-[var(--hud-color)]/20 p-3 bg-black/60 rounded-lg space-y-2">
+                      <div className="flex justify-between items-center border-b border-[var(--hud-color)]/15 pb-1 mb-2">
                         <h4 className="text-[9px] font-black uppercase text-white font-sans">Telemetry Audio Sequencer</h4>
                         <button 
-                          onClick={() => setSequencerActive(!sequencerActive)}
-                          className={`px-3 py-1 font-black text-[7.5px] border transition-all ${sequencerActive ? 'bg-red-500 text-black border-red-500 animate-pulse' : 'bg-[#00ff41]/5 text-[#00ff41] border-[#00ff41]/40'}`}
+                          onClick={() => { playHapticClick(); setSequencerActive(!sequencerActive); }}
+                          className={`px-3 py-1 font-black text-[7.5px] border transition-all cursor-pointer ${sequencerActive ? 'bg-red-500 text-black border-red-500 animate-pulse' : 'bg-[var(--hud-color)]/5 text-[var(--hud-color)] border-[var(--hud-color)]/40'}`}
                         >
                           {sequencerActive ? "SEQUENCER_HALT" : "SEQUENCER_PLAY"}
                         </button>
@@ -2215,8 +2690,8 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                                   return c;
                                   });
                               }}
-                              className={`w-6 h-6 border font-bold text-[8px] flex items-center justify-center transition-all ${
-                                sequencerSteps[idx] ? 'bg-[#00ff41] text-black border-[#00ff41]' : 'border-gray-800 text-gray-500'
+                              className={`w-6 h-6 border font-bold text-[8px] flex items-center justify-center transition-all cursor-pointer ${
+                                sequencerSteps[idx] ? 'bg-[var(--hud-color)] text-black border-[var(--hud-color)]' : 'border-gray-800 text-gray-500 hover:border-[var(--hud-color)]/50'
                               } ${sequencerActive && currentStep === idx ? 'ring-2 ring-white scale-110' : ''}`}
                             >
                               {idx + 1}
@@ -2233,7 +2708,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                           <input 
                             type="range" min="100" max="600" step="50" value={sequencerSpeed}
                             onChange={(e) => setSequencerSpeed(parseInt(e.target.value))}
-                            className="accent-[#00ff41] h-1 w-20"
+                            className="accent-[var(--hud-color)] h-1 w-20"
                           />
                           <span>{sequencerSpeed}ms</span>
                         </div>
@@ -2246,13 +2721,12 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
             )}
           </main>
 
-          {/* COLUMN 3: RIGHT SIDEBAR (Live Terminal Console & Telemetry Packet Streams) */}
-          {/* order-3 on both mobile and desktop/landscape layouts */}
+          {/* COLUMN 3: RIGHT SIDEBAR (Live Telemetry Stream & CLI Shell) */}
           <aside className="order-3 lg:col-span-3 flex flex-col gap-4 lg:overflow-y-auto lg:h-full scrollbar-thin">
             
             {/* LIVE TELEMETRY STREAM */}
-            <div className="bg-[#05070a]/90 border border-[#00ff41]/25 p-4 rounded-xl flex-1 flex flex-col gap-3 font-mono overflow-hidden">
-              <h2 className="text-[9px] font-black tracking-widest border-b border-[#00ff41]/20 pb-1 flex justify-between items-center font-sans">
+            <div className="bg-[#05070a]/90 border border-[var(--hud-color)]/25 p-4 rounded-xl flex-1 flex flex-col gap-3 font-mono overflow-hidden">
+              <h2 className="text-[9px] font-black tracking-widest border-b border-[var(--hud-color)]/20 pb-1 flex justify-between items-center font-sans">
                 <span>LIVE TELEMETRY STREAM</span>
                 <span className="text-[7px] opacity-40">MAX 25 PACKETS</span>
               </h2>
@@ -2267,16 +2741,19 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   liveData.map((item, idx) => (
                     <div
                       key={item.id || idx}
-                      className="text-[8px] bg-[#00ff41]/5 hover:bg-[#00ff41]/10 p-1.5 border-l border-[#00ff41] flex flex-col justify-between gap-1 transition-all group"
+                      onClick={() => { playHapticClick(); setSelectedPacket(item); }}
+                      className="text-[8px] bg-[var(--hud-color)]/5 hover:bg-[var(--hud-color)]/10 p-1.5 border-l border-[var(--hud-color)] flex flex-col justify-between gap-1 transition-all group cursor-pointer"
                     >
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[6.5px] px-1 py-0.2 bg-[#00ff41]/20 text-[#00ff41] font-black">RX</span>
-                        <span className="font-bold text-[#00ff41]">{item.node} &gt;&gt;</span>
+                        <span className={`text-[6.5px] px-1 py-0.2 bg-[var(--hud-color)]/20 font-black ${item.status === 'TX' ? 'text-cyan-400 bg-cyan-950/45 border-l border-cyan-400' : 'text-[var(--hud-color)]'}`}>
+                          {item.status || 'RX'}
+                        </span>
+                        <span className="font-bold text-[var(--hud-color)]">{item.node} &gt;&gt;</span>
                         <span className="opacity-80 group-hover:text-white truncate max-w-[120px]">{item.device || 'SYSTEM HARDWARE'}</span>
                       </div>
                       <div className="flex items-center justify-between text-[7px] opacity-60">
                         <span>{new Date(item.timestamp).toLocaleTimeString()}</span>
-                        <span className="border border-[#00ff41]/20 px-1 bg-[#00ff41]/5 text-white">
+                        <span className="border border-[var(--hud-color)]/20 px-1 bg-[var(--hud-color)]/5 text-white">
                           {item.status || 'OK'}
                         </span>
                       </div>
@@ -2284,23 +2761,45 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
                   ))
                 )}
               </div>
+
+              {/* CSV/JSON EXPORTS */}
+              <div className="flex justify-between gap-1.5 border-t border-[var(--hud-color)]/10 pt-2">
+                <button
+                  onClick={exportTelemetryCSV}
+                  className="flex-1 py-1 bg-black border border-[var(--hud-color)]/30 text-[7px] font-black tracking-wider hover:bg-[var(--hud-color)] hover:text-black transition-all rounded uppercase cursor-pointer"
+                >
+                  📥 CSV
+                </button>
+                <button
+                  onClick={exportTelemetryJSON}
+                  className="flex-1 py-1 bg-black border border-[var(--hud-color)]/30 text-[7px] font-black tracking-wider hover:bg-[var(--hud-color)] hover:text-black transition-all rounded uppercase cursor-pointer"
+                >
+                  📥 JSON
+                </button>
+                <button
+                  onClick={clearTelemetryLogs}
+                  className="px-2 py-1 bg-black border border-red-500/40 text-red-400 text-[7px] font-black tracking-wider hover:bg-red-500 hover:text-black transition-all rounded uppercase cursor-pointer"
+                >
+                  CLEAR
+                </button>
+              </div>
             </div>
 
             {/* OPERATIVE CLI TERMINAL SHELL */}
-            <div className="bg-black/95 border border-[#00ff41]/25 p-4 rounded-xl shadow-[0_0_15px_rgba(0,255,65,0.03)] font-mono flex flex-col gap-2">
-              <div className="flex justify-between items-center border-b border-[#00ff41]/15 pb-1">
-                <span className="text-[8px] font-black tracking-widest text-[#00ff41] uppercase font-sans">OPERATIVE CLI CONSOLE</span>
+            <div className="bg-black/95 border border-[var(--hud-color)]/25 p-4 rounded-xl shadow-[0_0_15px_var(--hud-glow)] font-mono flex flex-col gap-2">
+              <div className="flex justify-between items-center border-b border-[var(--hud-color)]/15 pb-1">
+                <span className="text-[8px] font-black tracking-widest text-[var(--hud-color)] uppercase font-sans">OPERATIVE CLI CONSOLE</span>
                 <span className="text-[6.5px] opacity-35 font-mono">100 LINES MAX</span>
               </div>
 
-              <div className="h-36 overflow-y-auto space-y-1 text-[8.5px] leading-tight flex flex-col-reverse scrollbar-thin">
+              <div className="h-36 overflow-y-auto space-y-1 text-[8.5px] leading-tight flex flex-col-reverse scrollbar-thin select-text">
                 <div ref={terminalEndRef}></div>
                 {terminal.map((t, i) => {
-                  let color = "text-[#00ff41]/80";
+                  let color = "text-[var(--hud-color)]/80";
                   if (t.includes("CRITICAL") || t.includes("ERROR") || t.includes("FAILURE") || t.includes("ALERT")) {
                     color = "text-red-500 font-bold animate-pulse";
                   } else if (t.includes("SECURE") || t.includes("SUCCESS") || t.includes("ONLINE") || t.includes("APPROVED")) {
-                    color = "text-[#00ff41] font-bold";
+                    color = "text-[var(--hud-color)] font-bold";
                   } else if (t.includes("CMD EXECUTE")) {
                     color = "text-cyan-400 font-bold";
                   } else if (t.includes("LOCAL")) {
@@ -2313,14 +2812,14 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
               </div>
 
               {/* Command input form */}
-              <form onSubmit={handleCommandSubmit} className="flex gap-2 border border-[#00ff41]/30 px-2.5 py-1 bg-[#030508] rounded-md">
-                <span className="text-[8.5px] font-bold text-[#00ff41] select-none self-center">NEXUS_SHELL:~$</span>
+              <form onSubmit={handleCommandSubmit} className="flex gap-2 border border-[var(--hud-color)]/30 px-2.5 py-1 bg-[#030508] rounded-md">
+                <span className="text-[8.5px] font-bold text-[var(--hud-color)] select-none self-center">NEXUS_SHELL:~$</span>
                 <input
                   type="text"
                   value={terminalCommand}
                   onChange={(e) => setTerminalCommand(e.target.value)}
                   placeholder="Type command..."
-                  className="flex-1 bg-transparent border-none text-[8.5px] text-[#00ff41] font-mono focus:outline-none placeholder-[#00ff41]/25"
+                  className="flex-1 bg-transparent border-none text-[8.5px] text-[var(--hud-color)] font-mono focus:outline-none placeholder-[var(--hud-color)]/25"
                 />
               </form>
             </div>
@@ -2332,11 +2831,11 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
       {/* TOAST SYSTEM LAYER */}
       <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 max-w-xs w-full pointer-events-none">
         {toasts.map(toast => {
-          let borderColor = 'border-[#00ff41]';
+          let borderColor = 'border-[var(--hud-color)]';
           let icon = '🔌';
           let bgColor = 'bg-black/95';
-          let glow = 'shadow-[0_0_15px_rgba(0,255,65,0.15)]';
-          let textColor = 'text-[#00ff41]';
+          let glow = 'shadow-[0_0_15px_var(--hud-glow)]';
+          let textColor = 'text-[var(--hud-color)]';
           
           if (toast.type === 'disconnect') {
             borderColor = 'border-amber-500';
@@ -2362,7 +2861,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
               </div>
               <button 
                 onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
-                className="text-white/40 hover:text-white text-[9px] border border-white/20 px-1 rounded self-start"
+                className="text-white/40 hover:text-white text-[9px] border border-white/20 px-1 rounded self-start cursor-pointer"
               >
                 ×
               </button>
@@ -2372,7 +2871,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
       </div>
 
       {/* FOOTER DATA */}
-      <footer className="relative z-10 text-[8px] opacity-50 flex justify-between font-bold uppercase tracking-wider pt-2 border-t border-[#00ff41]/10 mt-auto font-mono">
+      <footer className="relative z-10 text-[8px] opacity-50 flex justify-between font-bold uppercase tracking-wider pt-2 border-t border-[var(--hud-color)]/10 mt-auto font-mono">
         <div className="flex gap-4">
           <span>SYSTEM RUNTIME: SECURE</span>
           <span>Sovereign IP Protected</span>
@@ -2403,7 +2902,7 @@ ${diagnosticResult || "No diagnostic scan performed yet."}
               [RESET MATRIX CONFIG]
             </button>
           )}
-          <span>SYS VERSION: 6.2.0</span>
+          <span>SYS VERSION: 6.3.0</span>
         </div>
       </footer>
       

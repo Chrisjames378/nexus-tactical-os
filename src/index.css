@@ -1,14 +1,24 @@
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
 @import "tailwindcss";
 
+:root {
+  --hud-color: #00ff41;
+  --hud-glow: rgba(0, 255, 65, 0.15);
+  --hud-glow-pulse: rgba(0, 255, 65, 0.4);
+  --hud-border-glow: rgba(0, 255, 65, 0.3);
+  --hud-border-pulse: rgba(0, 255, 65, 0.8);
+  --hud-dark: #020408;
+  --hud-card: #05070a;
+}
+
 @theme {
   --font-sans: "Orbitron", sans-serif;
   --font-mono: "Share Tech Mono", monospace;
   
-  --color-hud-green: #00ff41;
-  --color-hud-glow: rgba(0, 255, 65, 0.15);
-  --color-hud-dark: #020408;
-  --color-hud-card: #05070a;
+  --color-hud-green: var(--hud-color);
+  --color-hud-glow: var(--hud-glow);
+  --color-hud-dark: var(--hud-dark);
+  --color-hud-card: var(--hud-card);
   
   --animate-scanline: scanline 6s linear infinite;
   --animate-flicker: flicker 0.15s infinite;
@@ -34,24 +44,24 @@
 
 @keyframes pulse-glow {
   0%, 100% {
-    box-shadow: 0 0 10px rgba(0, 255, 65, 0.2), inset 0 0 10px rgba(0, 255, 65, 0.1);
-    border-color: rgba(0, 255, 65, 0.3);
+    box-shadow: 0 0 10px var(--hud-glow), inset 0 0 10px rgba(0, 0, 0, 0.5);
+    border-color: var(--hud-border-glow);
   }
   50% {
-    box-shadow: 0 0 25px rgba(0, 255, 65, 0.5), inset 0 0 15px rgba(0, 255, 65, 0.25);
-    border-color: rgba(0, 255, 65, 0.8);
+    box-shadow: 0 0 25px var(--hud-glow-pulse), inset 0 0 15px var(--hud-glow);
+    border-color: var(--hud-border-pulse);
   }
 }
 
 @keyframes terminal-blink {
   from, to { border-color: transparent }
-  50% { border-color: #00ff41 }
+  50% { border-color: var(--hud-color) }
 }
 
 /* CUSTOM UTILITIES & GLOBAL STYLES */
 body {
-  background-color: #020408;
-  color: #00ff41;
+  background-color: var(--hud-dark);
+  color: var(--hud-color);
   overflow-x: hidden;
   position: relative;
 }
@@ -62,7 +72,7 @@ body {
   display: block;
   position: fixed;
   top: 0; left: 0; bottom: 0; right: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 0, 0.06));
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.04), rgba(0, 255, 0, 0.01), rgba(0, 0, 0, 0.04));
   z-index: 9999;
   background-size: 100% 4px, 6px 100%;
   pointer-events: none;
@@ -73,7 +83,7 @@ body {
   display: block;
   position: fixed;
   top: 0; left: 0; bottom: 0; right: 0;
-  background: rgba(18, 16, 16, 0.1);
+  background: rgba(18, 16, 16, 0.08);
   opacity: 0;
   z-index: 9999;
   pointer-events: none;
@@ -83,8 +93,8 @@ body {
 /* Grid Matrix Background */
 .hud-grid {
   background-image: 
-    linear-gradient(rgba(0, 255, 65, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 255, 65, 0.03) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--hud-color) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--hud-color) 4%, transparent) 1px, transparent 1px);
   background-size: 20px 20px;
 }
 
@@ -96,21 +106,21 @@ body {
 
 ::-webkit-scrollbar-track {
   background: rgba(2, 4, 8, 0.5);
-  border: 1px solid rgba(0, 255, 65, 0.1);
+  border: 1px solid color-mix(in srgb, var(--hud-color) 10%, transparent);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 255, 65, 0.3);
+  background: color-mix(in srgb, var(--hud-color) 30%, transparent);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 255, 65, 0.6);
-  box-shadow: 0 0 10px rgba(0, 255, 65, 0.5);
+  background: var(--hud-color);
+  box-shadow: 0 0 10px var(--hud-color);
 }
 
 /* Selection Glow */
 ::selection {
-  background: rgba(0, 255, 65, 0.25);
-  text-shadow: 0 0 5px #00ff41;
+  background: color-mix(in srgb, var(--hud-color) 25%, transparent);
+  text-shadow: 0 0 5px var(--hud-color);
 }
